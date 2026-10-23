@@ -23,7 +23,7 @@ export class DashboardAuth {
 
   isPublic(pathname: string): boolean {
     return pathname === '/api/auth/login' || pathname === '/api/auth/session' || pathname === '/api/auth/logout'
-      || pathname === '/api/github/webhook';
+      || pathname === '/api/github/webhook' || pathname === '/api/github/installed';
   }
 
   isAuthorized(request: Request): boolean {

@@ -68,6 +68,48 @@ export function appJwt(appId: string, pem: string, now = Date.now()): string {
   return `${data}.${signer.sign(pem).toString('base64url')}`;
 }
 
+export function githubConnectTarget(slug: string | undefined, appId: string | undefined): { redirect: string } | { error: string } {
+  if (!slug || !appId || !/^[A-Za-z0-9][A-Za-z0-9-]{0,80}$/.test(slug)) {
+    return { error: 'The GitHub app is not configured. Add the existing bot before giving access.' };
+  }
+  return { redirect: `https://github.com/apps/${slug}/installations/new` };
+}
+
+export function installationRepositoryNames(payload: unknown): string[] {
+  const repos = payload && typeof payload === 'object' && 'repositories' in payload
+    ? (payload as { repositories?: unknown }).repositories
+    : undefined;
+  if (!Array.isArray(repos)) return [];
+  return repos.flatMap(repo => {
+    if (!repo || typeof repo !== 'object' || !('full_name' in repo)) return [];
+    const name = (repo as { full_name?: unknown }).full_name;
+    return typeof name === 'string' && /^[^/\s]+\/[^/\s]+$/.test(name) ? [name] : [];
+  });
+}
+
+export function matchingVercelProject(projects: { id: string; name: string; domains: string[] }[], host: string): string | null {
+  const wanted = host.trim().toLowerCase();
+  if (!wanted) return null;
+  const match = projects.find(project => project.domains.some(domain => domain.toLowerCase() === wanted));
+  return match?.id ?? null;
+}
+
+export async function installationExists(appId: string, pem: string, installationId: string): Promise<boolean> {
+  const response = await fetch(`https://api.github.com/app/installations/${encodeURIComponent(installationId)}`, {
+    headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${appJwt(appId, pem)}`, 'User-Agent': 'sentinel' },
+  });
+  return response.ok;
+}
+
+export async function listInstallationRepositories(appId: string, pem: string, installationId: string): Promise<string[]> {
+  const token = await installationToken(appId, pem, installationId, 'read');
+  const response = await fetch('https://api.github.com/installation/repositories?per_page=100', {
+    headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}`, 'User-Agent': 'sentinel' },
+  });
+  if (!response.ok) throw new Error('GitHub did not list the installation repositories.');
+  return installationRepositoryNames(await response.json());
+}
+
 export async function installationToken(appId: string, pem: string, installationId: string, access: 'read' | 'write'): Promise<string> {
   const permissions = access === 'write'
     ? { contents: 'write', pull_requests: 'write', metadata: 'read' }

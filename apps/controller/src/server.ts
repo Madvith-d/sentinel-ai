@@ -11,7 +11,7 @@ import { CoolifyProvider, RailwayProvider, RenderProvider } from './platform-pro
 import type { DeploymentProvider } from './monitor';
 import { createControllerActions, type RemediationConfig } from './actions';
 import { applyStoredSettings, createSettingsApi } from './settings';
-import { exchangeGithubManifest, githubConnectPage, githubCredentials, githubStateOk, verifyGithubWebhook } from './github-app';
+import { exchangeGithubManifest, githubConnectTarget, githubCredentials, githubStateOk, installationExists, listInstallationRepositories, matchingVercelProject, verifyGithubWebhook } from './github-app';
 import { pollVercelDevice, startVercelDevice } from './vercel-login';
 import { DashboardAuth } from './auth';
 
@@ -49,7 +49,7 @@ if (rollbackFlag === 'true' && monitorFlag !== 'true') {
   throw new Error('Rollback cannot be enabled when monitoring is disabled.');
 }
 
-let monitorConfig: {
+type MonitorConfig = {
   projectId: string;
   rollbackEnabled: boolean;
   probePath: string;
@@ -57,15 +57,14 @@ let monitorConfig: {
   deploymentStatusIntervalMs: number;
   provider: DeploymentProvider;
   platform: string;
-} | undefined;
+};
 
-if (monitorFlag === 'true') {
+function readMonitorConfig(): MonitorConfig {
   const platform = (process.env.CONTROLLER_PLATFORM ?? 'vercel').toLowerCase();
   if (!['vercel', 'railway', 'render', 'coolify'].includes(platform)) throw new Error('CONTROLLER_PLATFORM must be vercel, railway, render, or coolify.');
   const projectId = platform === 'vercel' ? process.env.VERCEL_PROJECT_ID : platform === 'railway' ? process.env.RAILWAY_SERVICE_ID : platform === 'render' ? process.env.RENDER_SERVICE_ID : process.env.COOLIFY_APPLICATION_ID;
   if (!projectId) throw new Error(`Monitoring requires a configured ${platform} service/application ID.`);
-
-  const rollbackEnabled = rollbackFlag === 'true';
+  const rollbackEnabled = process.env.CONTROLLER_ROLLBACK_ENABLED === 'true';
   if (rollbackEnabled && process.env.CONTROLLER_ROLLBACK_PROJECT_ID !== projectId) {
     throw new Error('Rollback requires CONTROLLER_ROLLBACK_PROJECT_ID to exactly match the configured platform service/application ID.');
   }
@@ -77,7 +76,6 @@ if (monitorFlag === 'true') {
   if (!Number.isInteger(deploymentStatusIntervalMs) || deploymentStatusIntervalMs < 1_000 || deploymentStatusIntervalMs > 600_000) {
     throw new Error('CONTROLLER_DEPLOYMENT_STATUS_INTERVAL_MS must be between 1000 and 600000.');
   }
-
   const productionUrl = platform === 'vercel' ? process.env.VERCEL_PRODUCTION_DOMAIN : platform === 'railway' ? process.env.RAILWAY_PRODUCTION_URL : platform === 'render' ? process.env.RENDER_PRODUCTION_URL : process.env.COOLIFY_PRODUCTION_URL;
   if (!productionUrl) throw new Error(`Monitoring requires a ${platform} public production URL.`);
   let provider: DeploymentProvider;
@@ -98,16 +96,10 @@ if (monitorFlag === 'true') {
     if (!token || !baseUrl) throw new Error('Coolify monitoring requires COOLIFY_API_TOKEN and COOLIFY_BASE_URL.');
     provider = new CoolifyProvider({ accessToken: token, applicationId: projectId, baseUrl, productionUrl });
   }
-  monitorConfig = {
-    projectId,
-    rollbackEnabled,
-    probePath: process.env.CONTROLLER_PROBE_PATH ?? '/api/tasks',
-    pollIntervalMs,
-    deploymentStatusIntervalMs,
-    provider,
-    platform,
-  };
+  return { projectId, rollbackEnabled, probePath: process.env.CONTROLLER_PROBE_PATH ?? '/api/tasks', pollIntervalMs, deploymentStatusIntervalMs, provider, platform };
 }
+
+const monitorConfig = monitorFlag === 'true' ? readMonitorConfig() : undefined;
 
 const dashboardAuth = new DashboardAuth(process.env.DASHBOARD_USERNAME ?? '', process.env.DASHBOARD_PASSWORD ?? '');
 let remediation: RemediationConfig | undefined;
@@ -158,101 +150,23 @@ const watch = {
 };
 
 let vercelDevice: { code: string; expiresAt: number } | undefined;
+let monitorWorker: PollingWorker | undefined;
 
-async function integrationRoutes(request: Request, settingsStore: typeof store): Promise<Response | null> {
-  const url = new URL(request.url);
-  const dashboard = 'http://127.0.0.1:5173/';
-  if (url.pathname === '/api/github/webhook' && request.method === 'POST') {
-    const body = await request.text();
-    const secret = process.env.GITHUB_WEBHOOK_SECRET ?? '';
-    if (!secret) return Response.json({ error: 'GitHub webhook secret is not configured.' }, { status: 503 });
-    if (!verifyGithubWebhook(body, request.headers.get('x-hub-signature-256'), secret)) {
-      return Response.json({ error: 'GitHub webhook signature did not match.' }, { status: 401 });
-    }
-    return new Response(null, { status: 204 });
+function dashboardOrigin(): string {
+  const configured = process.env.DASHBOARD_ORIGIN ?? 'http://127.0.0.1:5173';
+  const url = new URL(configured);
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+    throw new Error('DASHBOARD_ORIGIN must be an http(s) origin without credentials.');
   }
-  if (url.pathname === '/api/github/connect' && request.method === 'GET') {
-    const owner = url.searchParams.get('owner')?.trim();
-    return new Response(githubConnectPage(publicOrigin(), owner || undefined), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
-  }
-  if (url.pathname === '/api/github/callback' && request.method === 'GET') {
-    const returnedState = url.searchParams.get('state');
-    if (returnedState && !githubStateOk(returnedState)) return Response.json({ error: 'GitHub connect state did not match.' }, { status: 400 });
-    const code = url.searchParams.get('code');
-    if (!code) return Response.json({ error: 'GitHub did not return an app code.' }, { status: 400 });
-    try {
-      const saved = await exchangeGithubManifest(code);
-      await settingsStore.writeSettings(saved);
-      const slug = saved.GITHUB_APP_SLUG;
-      return Response.redirect(`https://github.com/apps/${encodeURIComponent(slug)}/installations/new`, 302);
-    } catch {
-      return Response.json({ error: 'GitHub app setup did not finish.' }, { status: 502 });
-    }
-  }
-  if (url.pathname === '/api/github/installed' && request.method === 'GET') {
-    const installationId = url.searchParams.get('installation_id');
-    if (!installationId || !/^\d+$/.test(installationId)) return Response.json({ error: 'GitHub installation id was missing.' }, { status: 400 });
-    await settingsStore.writeSettings({ GITHUB_INSTALLATION_ID: installationId });
-    return Response.redirect(`${dashboard}?setup=github`, 302);
-  }
-  if (url.pathname === '/api/vercel/connect' && request.method === 'POST') {
-    try {
-      const device = await startVercelDevice();
-      vercelDevice = { code: device.deviceCode, expiresAt: device.expiresAt };
-      return Response.json({ userCode: device.userCode, verificationUri: device.verificationUri, intervalMs: device.intervalMs });
-    } catch {
-      return Response.json({ error: 'Vercel sign-in did not start.' }, { status: 502 });
-    }
-  }
-  if (url.pathname === '/api/vercel/connect' && request.method === 'GET') {
-    if (!vercelDevice || vercelDevice.expiresAt < Date.now()) return Response.json({ error: 'Start Vercel sign-in again.' }, { status: 404 });
-    try {
-      const result = await pollVercelDevice(vercelDevice.code);
-      if (result.pending) return Response.json({ pending: true });
-      if (!result.accessToken) return Response.json({ error: 'Vercel sign-in did not finish.' }, { status: 502 });
-      await settingsStore.writeSettings({
-        VERCEL_ACCESS_TOKEN: result.accessToken,
-        ...(result.refreshToken ? { VERCEL_REFRESH_TOKEN: result.refreshToken } : {}),
-      });
-      vercelDevice = undefined;
-      return Response.json({ ok: true, restartRequired: true });
-    } catch {
-      return Response.json({ error: 'Vercel sign-in did not finish.' }, { status: 502 });
-    }
-  }
-  return null;
+  return url.origin;
 }
 
-const server = Bun.serve({
-  hostname: host,
-  port,
-  fetch: async (request, bunServer) => {
-    const url = new URL(request.url);
-    const authResponse = await dashboardAuth.handle(request);
-    if (authResponse) return authResponse;
-    if (url.pathname.startsWith('/api/') && !dashboardAuth.isPublic(url.pathname) && !dashboardAuth.isAuthorized(request)) {
-      return dashboardAuth.unauthorized();
-    }
-    const connect = await integrationRoutes(request, store);
-    if (connect) return connect;
-    const settingsResponse = await settingsApi(request);
-    if (settingsResponse) return settingsResponse;
-    if (url.pathname === '/api/watch') {
-      if (request.method !== 'GET') return Response.json({ error: 'Method not allowed.' }, { status: 405 });
-      return Response.json({ ...watch, now: new Date().toISOString() });
-    }
-    return (await activityApi(request, bunServer)) ?? incidentApi(request);
-  },
-});
-console.log(`Incident API listening on http://${server.hostname}:${server.port}`);
-if (!process.env.NEXATHON_RUN_TOKEN) {
-  console.info('Agent runs are read-only: set NEXATHON_RUN_TOKEN to allow the local CLI to start one.');
-}
-
-let worker: PollingWorker | undefined;
-if (monitorConfig) {
-  const config = monitorConfig;
-  worker = startPollingWorker({
+function launchMonitor(config: MonitorConfig): void {
+  if (monitorWorker) return;
+  watch.probePath = config.probePath;
+  watch.rollbackEnabled = config.rollbackEnabled;
+  watch.intervalMs = config.pollIntervalMs;
+  monitorWorker = startPollingWorker({
     projectIds: [config.projectId],
     allowlistedProjectIds: config.rollbackEnabled ? new Set([config.projectId]) : new Set(),
     probePath: config.probePath,
@@ -288,11 +202,160 @@ if (monitorConfig) {
   console.info(`Monitoring enabled for configured ${config.platform} service ${config.projectId}; rollback ${config.rollbackEnabled ? 'enabled' : 'disabled'}.`);
 }
 
+async function integrationRoutes(request: Request, settingsStore: typeof store): Promise<Response | null> {
+  const url = new URL(request.url);
+  const dashboard = dashboardOrigin();
+  if (url.pathname === '/api/github/webhook' && request.method === 'POST') {
+    const body = await request.text();
+    const secret = process.env.GITHUB_WEBHOOK_SECRET ?? '';
+    if (!secret) return Response.json({ error: 'GitHub webhook secret is not configured.' }, { status: 503 });
+    if (!verifyGithubWebhook(body, request.headers.get('x-hub-signature-256'), secret)) {
+      return Response.json({ error: 'GitHub webhook signature did not match.' }, { status: 401 });
+    }
+    return new Response(null, { status: 204 });
+  }
+  if (url.pathname === '/api/github/connect' && request.method === 'GET') {
+    await applyStoredSettings(settingsStore);
+    const target = githubConnectTarget(process.env.GITHUB_APP_SLUG, process.env.GITHUB_APP_ID);
+    if ('error' in target) return Response.json({ error: target.error }, { status: 409 });
+    return Response.redirect(target.redirect, 302);
+  }
+  if (url.pathname === '/api/github/repos' && request.method === 'GET') {
+    await applyStoredSettings(settingsStore);
+    const appId = process.env.GITHUB_APP_ID;
+    const pem = process.env.GITHUB_APP_PEM;
+    const installationId = process.env.GITHUB_INSTALLATION_ID;
+    if (!appId || !pem || !installationId) return Response.json({ error: 'Give the GitHub bot access before choosing a repository.' }, { status: 409 });
+    try {
+      const repositories = await listInstallationRepositories(appId, pem, installationId);
+      return Response.json({ repositories });
+    } catch {
+      return Response.json({ error: 'The GitHub bot could not list repositories.' }, { status: 502 });
+    }
+  }
+  if (url.pathname === '/api/github/callback' && request.method === 'GET') {
+    const returnedState = url.searchParams.get('state');
+    if (returnedState && !githubStateOk(returnedState)) return Response.json({ error: 'GitHub connect state did not match.' }, { status: 400 });
+    const code = url.searchParams.get('code');
+    if (!code) return Response.json({ error: 'GitHub did not return an app code.' }, { status: 400 });
+    try {
+      const saved = await exchangeGithubManifest(code);
+      await settingsStore.writeSettings(saved);
+      const slug = saved.GITHUB_APP_SLUG;
+      return Response.redirect(`https://github.com/apps/${encodeURIComponent(slug)}/installations/new`, 302);
+    } catch {
+      return Response.json({ error: 'GitHub app setup did not finish.' }, { status: 502 });
+    }
+  }
+  if (url.pathname === '/api/github/installed' && request.method === 'GET') {
+    const installationId = url.searchParams.get('installation_id');
+    const appId = process.env.GITHUB_APP_ID;
+    const pem = process.env.GITHUB_APP_PEM;
+    if (!installationId || !/^\d+$/.test(installationId) || !appId || !pem) return Response.json({ error: 'GitHub installation id was missing.' }, { status: 400 });
+    if (!await installationExists(appId, pem, installationId)) return Response.json({ error: 'That installation does not belong to the configured GitHub bot.' }, { status: 403 });
+    await settingsStore.writeSettings({ GITHUB_INSTALLATION_ID: installationId });
+    process.env.GITHUB_INSTALLATION_ID = installationId;
+    return Response.redirect(`${dashboard}/?setup=github`, 302);
+  }
+  if (url.pathname === '/api/vercel/projects' && request.method === 'GET') {
+    await applyStoredSettings(settingsStore);
+    const token = process.env.VERCEL_ACCESS_TOKEN;
+    if (!token) return Response.json({ error: 'Connect Vercel before listing projects.' }, { status: 409 });
+    const team = process.env.VERCEL_TEAM_ID ? `?teamId=${encodeURIComponent(process.env.VERCEL_TEAM_ID)}` : '';
+    try {
+      const response = await fetch(`https://api.vercel.com/v9/projects${team}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) return Response.json({ error: 'Vercel did not list projects.' }, { status: 502 });
+      const body = await response.json() as { projects?: { id?: string; name?: string; alias?: { domain?: string }[]; targets?: { production?: { alias?: string[] } } }[] };
+      const projects = (body.projects ?? []).flatMap(project => {
+        if (!project.id || !project.name) return [];
+        const domains = [
+          ...(project.targets?.production?.alias ?? []),
+          ...(project.alias ?? []).flatMap(alias => alias.domain ? [alias.domain] : []),
+        ];
+        return [{ id: project.id, name: project.name, domains }];
+      });
+      const selected = matchingVercelProject(projects, process.env.VERCEL_PRODUCTION_DOMAIN ?? '');
+      return Response.json({ projects, selected });
+    } catch {
+      return Response.json({ error: 'Vercel did not list projects.' }, { status: 502 });
+    }
+  }
+  if (url.pathname === '/api/monitor/start' && request.method === 'POST') {
+    if (monitorWorker) return Response.json({ ok: true, already: true });
+    await applyStoredSettings(settingsStore);
+    if (!process.env.REMEDIATOR_REPOSITORY) return Response.json({ error: 'Choose a repository before starting the monitor.' }, { status: 400 });
+    process.env.CONTROLLER_MONITOR_ENABLED = 'true';
+    await settingsStore.writeSettings({ CONTROLLER_MONITOR_ENABLED: 'true' });
+    try {
+      launchMonitor(readMonitorConfig());
+    } catch (error) {
+      return Response.json({ error: error instanceof Error ? error.message : 'The monitor did not start.' }, { status: 400 });
+    }
+    return Response.json({ ok: true, started: true });
+  }
+  if (url.pathname === '/api/vercel/connect' && request.method === 'POST') {
+    try {
+      const device = await startVercelDevice();
+      vercelDevice = { code: device.deviceCode, expiresAt: device.expiresAt };
+      return Response.json({ userCode: device.userCode, verificationUri: device.verificationUri, intervalMs: device.intervalMs });
+    } catch {
+      return Response.json({ error: 'Vercel sign-in did not start.' }, { status: 502 });
+    }
+  }
+  if (url.pathname === '/api/vercel/connect' && request.method === 'GET') {
+    if (!vercelDevice || vercelDevice.expiresAt < Date.now()) return Response.json({ error: 'Start Vercel sign-in again.' }, { status: 404 });
+    try {
+      const result = await pollVercelDevice(vercelDevice.code);
+      if (result.pending) return Response.json({ pending: true });
+      if (!result.accessToken) return Response.json({ error: 'Vercel sign-in did not finish.' }, { status: 502 });
+      await settingsStore.writeSettings({
+        VERCEL_ACCESS_TOKEN: result.accessToken,
+        ...(result.refreshToken ? { VERCEL_REFRESH_TOKEN: result.refreshToken } : {}),
+      });
+      process.env.VERCEL_ACCESS_TOKEN = result.accessToken;
+      if (result.refreshToken) process.env.VERCEL_REFRESH_TOKEN = result.refreshToken;
+      vercelDevice = undefined;
+      return Response.json({ ok: true, restartRequired: true });
+    } catch {
+      return Response.json({ error: 'Vercel sign-in did not finish.' }, { status: 502 });
+    }
+  }
+  return null;
+}
+
+const server = Bun.serve({
+  hostname: host,
+  port,
+  fetch: async (request, bunServer) => {
+    const url = new URL(request.url);
+    const authResponse = await dashboardAuth.handle(request);
+    if (authResponse) return authResponse;
+    if (url.pathname.startsWith('/api/') && !dashboardAuth.isPublic(url.pathname) && !dashboardAuth.isAuthorized(request)) {
+      return dashboardAuth.unauthorized();
+    }
+    const connect = await integrationRoutes(request, store);
+    if (connect) return connect;
+    const settingsResponse = await settingsApi(request);
+    if (settingsResponse) return settingsResponse;
+    if (url.pathname === '/api/watch') {
+      if (request.method !== 'GET') return Response.json({ error: 'Method not allowed.' }, { status: 405 });
+      return Response.json({ ...watch, now: new Date().toISOString() });
+    }
+    return (await activityApi(request, bunServer)) ?? incidentApi(request);
+  },
+});
+console.log(`Incident API listening on http://${server.hostname}:${server.port}`);
+if (!process.env.NEXATHON_RUN_TOKEN) {
+  console.info('Agent runs are read-only: set NEXATHON_RUN_TOKEN to allow the local CLI to start one.');
+}
+
+if (monitorConfig) launchMonitor(monitorConfig);
+
 let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  await worker?.stop();
+  await monitorWorker?.stop();
   server.stop();
   await store.close();
 }
