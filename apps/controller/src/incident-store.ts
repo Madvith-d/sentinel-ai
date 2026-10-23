@@ -159,6 +159,15 @@ export class IncidentStore {
     `)).then(() => undefined);
   }
 
+  deleteSettings(keys: string[]): StoreValue<void> {
+    if (this.memory) {
+      for (const key of keys) this.memory.settings.delete(key);
+      return;
+    }
+    if (keys.length === 0) return;
+    return Promise.all(keys.map(key => this.sql!`DELETE FROM integration_settings WHERE key = ${key}`)).then(() => undefined);
+  }
+
   async close(): Promise<void> {
     await this.sql?.end({ timeout: 5 });
   }

@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'bun:test';
 import { createHmac } from 'node:crypto';
-import { appJwt, githubConnectPage, githubConnectTarget, installationRepositoryNames, matchingVercelProject, verifyGithubWebhook } from '../src/github-app';
+import { appJwt, disconnectFields, githubConnectPage, githubConnectTarget, installationRepositoryNames, matchingVercelProject, verifyGithubWebhook } from '../src/github-app';
 
 describe('github app connect', () => {
   it('builds a manifest that asks for repo and pull request access', () => {
@@ -17,6 +17,13 @@ describe('github app connect', () => {
     const page = githubConnectPage('https://sentinel.example');
     expect(page).toContain('https://sentinel.example/api/github/webhook');
     expect(page).toContain('sentinel-ai-bot');
+  });
+
+  it('disconnects access without removing the bot', () => {
+    expect(disconnectFields.github).toContain('GITHUB_INSTALLATION_ID');
+    expect(disconnectFields.github).not.toContain('GITHUB_APP_PEM');
+    expect(disconnectFields.vercel).toContain('VERCEL_ACCESS_TOKEN');
+    expect(disconnectFields.vercel).not.toContain('VERCEL_TEAM_ID');
   });
 
   it('sends setup to the existing bot install page', () => {

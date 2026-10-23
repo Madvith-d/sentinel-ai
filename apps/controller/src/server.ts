@@ -11,7 +11,7 @@ import { CoolifyProvider, RailwayProvider, RenderProvider } from './platform-pro
 import type { DeploymentProvider } from './monitor';
 import { createControllerActions, type RemediationConfig } from './actions';
 import { applyStoredSettings, createSettingsApi } from './settings';
-import { exchangeGithubManifest, githubConnectTarget, githubCredentials, githubStateOk, installationExists, listInstallationRepositories, matchingVercelProject, verifyGithubWebhook } from './github-app';
+import { disconnectFields, exchangeGithubManifest, githubConnectTarget, githubCredentials, githubStateOk, installationExists, listInstallationRepositories, matchingVercelProject, verifyGithubWebhook } from './github-app';
 import { pollVercelDevice, startVercelDevice } from './vercel-login';
 import { DashboardAuth } from './auth';
 
@@ -279,6 +279,22 @@ async function integrationRoutes(request: Request, settingsStore: typeof store):
     } catch {
       return Response.json({ error: 'Vercel did not list projects.' }, { status: 502 });
     }
+  }
+  if (url.pathname === '/api/disconnect' && request.method === 'POST') {
+    let body: unknown;
+    try { body = await request.json(); } catch { return Response.json({ error: 'Expected JSON.' }, { status: 400 }); }
+    const provider = body && typeof body === 'object' && 'provider' in body ? (body as { provider?: unknown }).provider : undefined;
+    if (provider !== 'github' && provider !== 'vercel') return Response.json({ error: 'Choose github or vercel to disconnect.' }, { status: 400 });
+    const keys = [...disconnectFields[provider]];
+    await settingsStore.deleteSettings(keys);
+    for (const key of keys) delete process.env[key];
+    if (provider === 'vercel') {
+      await monitorWorker?.stop();
+      monitorWorker = undefined;
+      process.env.CONTROLLER_MONITOR_ENABLED = 'false';
+      await settingsStore.writeSettings({ CONTROLLER_MONITOR_ENABLED: 'false' });
+    }
+    return Response.json({ ok: true, disconnected: provider });
   }
   if (url.pathname === '/api/monitor/start' && request.method === 'POST') {
     if (monitorWorker) return Response.json({ ok: true, already: true });

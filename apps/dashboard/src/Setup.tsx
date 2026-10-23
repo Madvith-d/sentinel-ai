@@ -133,6 +133,21 @@ export function Setup({ onClose }: { onClose: () => void }) {
     else await loadSettings();
   }
 
+  async function disconnect(provider: 'github' | 'vercel') {
+    setError('');
+    const response = await fetch('/api/disconnect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ provider }),
+    });
+    const body = await response.json().catch(() => ({})) as { error?: string };
+    if (!response.ok) { setError(body.error || 'Disconnect did not finish.'); return; }
+    if (provider === 'github') { setRepos([]); setGithubListNote('GitHub access was disconnected.'); }
+    if (provider === 'vercel') { setProjects([]); setVercel(null); setVercelListNote('Vercel was disconnected.'); setMonitorNote('Monitor stopped.'); }
+    setDraft(current => ({ ...current, ...(provider === 'github' ? { REMEDIATOR_REPOSITORY: '' } : { VERCEL_PROJECT_ID: '' }) }));
+    await loadSettings();
+  }
+
   async function startMonitor() {
     setError('');
     setMonitorNote('');
@@ -187,9 +202,12 @@ export function Setup({ onClose }: { onClose: () => void }) {
           <p>{githubListNote}</p>
         </div>
       </div>
-      {field.get('GITHUB_APP_ID')?.configured
-        ? <a className="button button-secondary" href="/api/github/connect">Give access</a>
-        : <span className="connect-status">Bot is not configured on the controller.</span>}
+      <div className="setup-hero-actions">
+        {field.get('GITHUB_APP_ID')?.configured
+          ? <a className="button button-secondary" href="/api/github/connect">Give access</a>
+          : <span className="connect-status">Bot is not configured on the controller.</span>}
+        {githubReady && <button className="button button-ghost" type="button" onClick={() => void disconnect('github')}>Disconnect</button>}
+      </div>
     </section>
 
     <section className="setup-hero">
@@ -216,6 +234,7 @@ export function Setup({ onClose }: { onClose: () => void }) {
       </div>
       <div className="setup-hero-actions">
         <button className="button button-primary" type="button" onClick={() => void connectVercel()}>{vercelReady ? 'Vercel connected' : 'Connect Vercel'}</button>
+        {vercelReady && <button className="button button-ghost" type="button" onClick={() => void disconnect('vercel')}>Disconnect</button>}
         {vercel && <div className="connect-status"><strong>{vercel.status}</strong><span>Code <code>{vercel.userCode}</code> · <a href={vercel.verificationUri} target="_blank" rel="noreferrer">open verification</a></span></div>}
       </div>
       <label className="setup-field">

@@ -23,6 +23,9 @@ describe('integration settings', () => {
     expect(token?.value).toBe('');
     expect(host?.value).toBe('mail.example.com');
     expect((await store.readSettings()).SMTP_TO).toBe('judge@example.com');
+    await store.deleteSettings(['VERCEL_ACCESS_TOKEN']);
+    expect((await store.readSettings()).VERCEL_ACCESS_TOKEN).toBeUndefined();
+    expect((await store.readSettings()).SMTP_TO).toBe('judge@example.com');
     store.close();
   });
 });

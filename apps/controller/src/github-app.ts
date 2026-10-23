@@ -69,6 +69,11 @@ export function appJwt(appId: string, pem: string, now = Date.now()): string {
   return `${data}.${signer.sign(key).toString('base64url')}`;
 }
 
+export const disconnectFields = {
+  github: ['GITHUB_INSTALLATION_ID', 'REMEDIATOR_REPOSITORY', 'REMEDIATOR_ALLOWED_REPOSITORY'],
+  vercel: ['VERCEL_ACCESS_TOKEN', 'VERCEL_REFRESH_TOKEN', 'VERCEL_PROJECT_ID', 'CONTROLLER_ROLLBACK_PROJECT_ID'],
+} as const;
+
 export function githubConnectTarget(slug: string | undefined, appId: string | undefined): { redirect: string } | { error: string } {
   if (!slug || !appId || !/^[A-Za-z0-9][A-Za-z0-9-]{0,80}$/.test(slug)) {
     return { error: 'The GitHub app is not configured. Add the existing bot before giving access.' };
