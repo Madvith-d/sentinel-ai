@@ -21,6 +21,7 @@ RUN bun install --frozen-lockfile --production
 COPY packages packages
 COPY apps/controller apps/controller
 WORKDIR /app/apps/controller
+ENV NODE_OPTIONS=--dns-result-order=ipv4first
 ENV CONTROLLER_HOST=0.0.0.0
 ENV CONTROLLER_PORT=8787
 EXPOSE 8787

@@ -68,6 +68,24 @@ describe('VercelProvider', () => {
       && call.url.searchParams.get('rollbackCandidate') === 'true')).toBe(true);
   });
 
+  it('retries one timed-out Vercel API call', async () => {
+    let attempts = 0;
+    const fetchMock = (async (input: RequestInfo | URL) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      attempts += 1;
+      if (attempts === 1) throw new Error('connect timeout');
+      if (url.pathname === '/v4/aliases') {
+        return Response.json({ aliases: [{ alias: 'demo.example.com', deploymentId: 'dpl_current', projectId }] });
+      }
+      if (url.pathname === '/v13/deployments/dpl_current') return Response.json(currentDeployment);
+      return new Response(null, { status: 404 });
+    }) as typeof fetch;
+    const provider = new VercelProvider({ accessToken: token, projectId, productionDomain: 'demo.example.com', fetch: fetchMock, timeoutMs: 1000 });
+    const current = await provider.getProductionDeployment(projectId);
+    expect(current?.id).toBe('dpl_current');
+    expect(attempts).toBe(3);
+  });
+
   it('revalidates project and predecessor before issuing rollback', async () => {
     const { provider, calls } = mockProvider();
     await expect(provider.rollbackProductionTo('other-project', 'dpl_previous')).rejects.toThrow('different project');
