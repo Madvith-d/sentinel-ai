@@ -59,7 +59,7 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
     if (head.toLowerCase() !== request.commitSha.toLowerCase()) throw new Error('Cloned revision does not match incident SHA');
 
     // Bun is used for dependency setup, tests, and build in the target repo.
-    await checked(sandbox, `curl -fsSL https://bun.com/install -o /tmp/bun-install.sh && bash /tmp/bun-install.sh bun-v${BUN_VERSION}`, 90_000);
+    await checked(sandbox, `if [ -x "$HOME/.bun/bin/bun" ] && [ "$("$HOME/.bun/bin/bun" --version)" = "${BUN_VERSION}" ]; then "$HOME/.bun/bin/bun" --version; else curl -fsSL https://bun.com/install -o /tmp/bun-install.sh && bash /tmp/bun-install.sh bun-v${BUN_VERSION}; fi`, 90_000);
     const setup = await command(sandbox, `export PATH="$HOME/.bun/bin:$PATH"; ${request.setupCommand}`, 180_000, REPO_DIR);
     if (setup.exitCode !== 0) return failure(request, 'setup_failed', 'Project dependency setup failed', redacted(setup.stderr || setup.stdout, provider));
 
@@ -73,7 +73,7 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
     if (baseline.exitCode === 0) return failure(request, 'not_reproducible', 'Reproduction already passes at the incident SHA; no patch or PR created');
 
     await checked(sandbox,
-      `curl -fsSL https://www.superchargeai.in/install.sh -o /tmp/supercharge-install.sh && SUPERCHARGE_VERSION=${SC_VERSION} SUPERCHARGE_GITHUB_REPO=iotserver24/supercharge-releases SUPERCHARGE_NO_MODIFY_PATH=1 bash /tmp/supercharge-install.sh && "$HOME/.local/bin/supercharge" --version`,
+      `if "$HOME/.local/bin/supercharge" --version 2>/dev/null | grep -q '^supercharge ${SC_VERSION} '; then "$HOME/.local/bin/supercharge" --version; else curl -fsSL https://www.superchargeai.in/install.sh -o /tmp/supercharge-install.sh && SUPERCHARGE_VERSION=${SC_VERSION} SUPERCHARGE_GITHUB_REPO=iotserver24/supercharge-releases SUPERCHARGE_NO_MODIFY_PATH=1 bash /tmp/supercharge-install.sh && "$HOME/.local/bin/supercharge" --version; fi`,
       90_000);
     await sandbox.files.write('/home/user/.supercharge/config.toml', superchargeConfig(provider));
     await checked(sandbox, 'chmod 700 /home/user/.supercharge && chmod 600 /home/user/.supercharge/config.toml', 10_000);

@@ -11,6 +11,13 @@ if (!process.env.E2B_API_KEY) {
   try {
     const result = await sandbox.commands.run('uname -m; git --version; curl --version | head -1; echo HOME=$HOME; command -v bun || true; command -v unzip || true', { timeoutMs: 30_000 });
     console.log(result.stdout.trim());
+    if (process.env.SMOKE_ASSERT_PREINSTALLED === '1') {
+      const versions = await sandbox.commands.run('"$HOME/.bun/bin/bun" --version && "$HOME/.local/bin/supercharge" --version', { timeoutMs: 15_000 });
+      if (!versions.stdout.includes('1.3.11') || !versions.stdout.includes('supercharge 1.3.30')) {
+        throw new Error('Template lacks the pinned Bun/Supercharge versions');
+      }
+      console.log(`preinstalled tools: ${versions.stdout.trim().replaceAll('\n', ', ')}`);
+    }
     if (process.env.SMOKE_INSTALL_BUN === '1') {
       const bun = await sandbox.commands.run(
         'curl -fsSL https://bun.com/install -o /tmp/bun-install.sh && bash /tmp/bun-install.sh bun-v1.3.11 && "$HOME/.bun/bin/bun" --version',
@@ -25,7 +32,7 @@ if (!process.env.E2B_API_KEY) {
         { timeoutMs: 90_000 },
       );
       console.log(`cloned repo: ${clone.exitCode === 0 ? 'ok' : 'failed'}`);
-      if (process.env.SMOKE_INSTALL_BUN === '1') {
+      if (process.env.SMOKE_INSTALL_BUN === '1' || process.env.SMOKE_ASSERT_PREINSTALLED === '1') {
         const target = process.env.SMOKE_INSTALL_TARGET === 'sample' ? 'sample' : 'remediator';
         const checks = target === 'sample'
           ? 'bun install --frozen-lockfile --filter ./apps/sample && bun run --cwd apps/sample test && bun run --cwd apps/sample build && test -f apps/sample/.next/BUILD_ID'
@@ -43,7 +50,8 @@ if (!process.env.E2B_API_KEY) {
         { timeoutMs: 90_000 },
       );
       console.log(install.stdout.trim());
-      if (process.env.SMOKE_MCP_CONFIG === '1') {
+    }
+    if (process.env.SMOKE_MCP_CONFIG === '1') {
         await sandbox.files.write('/home/user/.supercharge/config.toml', superchargeConfig({
           modelName: 'smoke', modelId: 'dummy', baseUrl: 'https://example.invalid/v1',
           apiBackend: 'responses', apiKey: 'dummy-key', githubReadToken: 'dummy-read-token',
@@ -51,8 +59,8 @@ if (!process.env.E2B_API_KEY) {
         const mcp = await sandbox.commands.run('"$HOME/.local/bin/supercharge" mcp list --json', {
           envs: { GITHUB_READ_TOKEN: 'dummy-read-token' }, timeoutMs: 30_000,
         });
-        console.log(`Supercharge MCP config parsed: ${mcp.stdout.includes('github')}`);
-      }
+        if (!mcp.stdout.includes('github')) throw new Error('Supercharge did not load the GitHub MCP configuration');
+        console.log('Supercharge MCP config parsed: true');
     }
   } finally {
     await sandbox.kill();

@@ -5,3 +5,5 @@ dist/
 *.log
 
 !.env.example
+# E2B CLI may generate account-specific template metadata.
+e2b-template/e2b.toml
