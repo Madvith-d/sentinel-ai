@@ -1,8 +1,6 @@
 # Local controller — Ronit
 
-The controller provides SQLite incident/probe-streak/rollback-claim storage, a read-only incidents API, a periodic worker, and a Vercel-backed runtime monitor. The monitor supports same-route current/predecessor probes, a three-failure threshold, project/recency checks, one rollback claim per deployment, and bounded post-rollback verification. The worker and rollback integration are disabled by default. Build-status polling and remediator/notifier dispatch are not wired yet.
-The controller provides SQLite incident/probe-streak/rollback-claim storage, a read-only incidents API, a periodic worker, and runtime monitors for Vercel, Railway, Render, and Coolify. The monitor supports same-route current/predecessor probes, a three-failure threshold, deployment-log evidence, project/recency checks, one rollback claim per deployment, bounded post-rollback verification, failed-build detection, and optional remediator/notifier dispatch. Monitoring, rollback, and remediation are disabled by default.
-The controller provides SQLite incident/probe-streak/rollback-claim storage, a read-only incidents API, a periodic worker, and a Vercel-backed runtime monitor. The monitor supports same-route current/predecessor probes, a three-failure threshold, project/recency checks, one rollback claim per deployment, bounded post-rollback verification, failed-build detection, and optional remediator/notifier dispatch. Monitoring, rollback, and remediation are disabled by default.
+The controller provides PostgreSQL incident/probe-streak/rollback-claim storage, a read-only incidents API, a periodic worker, and runtime monitors for Vercel, Railway, Render, and Coolify. The monitor supports same-route current/predecessor probes, a three-failure threshold, deployment-log evidence, project/recency checks, one rollback claim per deployment, bounded post-rollback verification, failed-build detection, and optional remediator/notifier dispatch. Monitoring, rollback, and remediation are disabled by default.
 
 ## Run locally
 
@@ -12,7 +10,7 @@ From this directory:
 bun run start
 ```
 
-The API binds only to `127.0.0.1` (default port `8787`). Set `CONTROLLER_PORT` to change the port and `INCIDENT_DB_PATH` to change the SQLite file location. The default database is `./data/incidents.sqlite` relative to this package. Copy `.env.example` to an untracked `.env` for local configuration; monitoring and rollback remain disabled unless explicitly enabled.
+The API binds only to `127.0.0.1` (default port `8787`). Set `CONTROLLER_PORT` to change the port. Set `DATABASE_URL` to the PostgreSQL connection string; the controller creates its tables on startup. Set `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` in the controller environment. The dashboard login creates an in-memory session cookie and never stores the password in the browser. Copy `.env.example` to an untracked `.env` for local configuration; monitoring and rollback remain disabled unless explicitly enabled.
 
 - `GET /api/incidents` lists up to 500 incidents.
 - `GET /api/incidents/:id` returns the incident including event history.

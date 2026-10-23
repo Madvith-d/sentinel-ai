@@ -218,10 +218,10 @@ describe('monitor safety boundaries', () => {
 
   it('escalates an interrupted rollback on the next poll', async () => {
     const store = new IncidentStore(':memory:');
-    store.recordProbe(projectId, current.id, '/api/tasks', 'fail', at.toISOString());
-    store.recordProbe(projectId, current.id, '/api/tasks', 'fail', at.toISOString());
-    store.recordProbe(projectId, current.id, '/api/tasks', 'fail', at.toISOString());
-    store.save({
+    await store.recordProbe(projectId, current.id, '/api/tasks', 'fail', at.toISOString());
+    await store.recordProbe(projectId, current.id, '/api/tasks', 'fail', at.toISOString());
+    await store.recordProbe(projectId, current.id, '/api/tasks', 'fail', at.toISOString());
+    await store.save({
       id: incidentId(projectId, current.id, '/api/tasks'),
       kind: 'runtime_regression',
       status: 'detected',
@@ -246,7 +246,7 @@ describe('monitor safety boundaries', () => {
 
   it('prevents a second rollback for the same deployment across probe paths', async () => {
     const store = new IncidentStore(':memory:');
-    expect(store.claimRollback(current.id, at.toISOString())).toBe(true);
+    expect(await store.claimRollback(current.id, at.toISOString())).toBe(true);
 
     const { implementation, calls } = provider();
     const result = await driveFailure(makeOptions(implementation, { store }));

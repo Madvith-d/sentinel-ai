@@ -22,7 +22,7 @@ The local dashboard shows the evidence, decision, status, rollback or PR, and a 
 
 - **Bun 1.x everywhere we control:** Bun is the TypeScript runtime, package manager, lockfile (`bun.lock`), script runner, and test runner. Use `bun install`, `bun run ...`, and `bun test`—do not add npm/pnpm/Yarn lockfiles. The root workspace currently pins `bun@1.3.11` for local consistency.
 - **Target deployment:** Vercel with a Bun function runtime configured by `apps/sample/vercel.json` (`bunVersion: "1.x"`; Vercel manages the minor/patch version). The sample app is a separate Vercel project. Bun is supported on all plans, but the Vercel function runtime is Beta.
-- **Controller:** Bun + TypeScript, local `bun:sqlite`, Vercel CLI/API, and a localhost HTTP API.
+- **Controller:** Bun + TypeScript, PostgreSQL, Vercel CLI/API, and a localhost HTTP API.
 - **Remediator:** Bun + TypeScript controller package, E2B JavaScript SDK, Supercharge CLI inside E2B, read-only GitHub MCP for diagnosis; GitHub CLI on the controller for branch/draft PR.
 - **Dashboard and alerts:** Lightweight React/Vite UI served locally via Bun; Slack incoming webhook. Madvit can keep the UI minimal to reserve time for the PPT.
 

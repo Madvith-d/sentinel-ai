@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+'use client';
+
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Setup } from './Setup';
 import {
   decisionLabels,
@@ -10,7 +12,7 @@ import {
 import { useIncidents, type DataMode } from './useIncidents';
 import { useActivity } from './useActivity';
 
-const mode: DataMode = import.meta.env.VITE_DATA_MODE === 'fixtures' ? 'fixtures' : 'live';
+const mode: DataMode = process.env.NEXT_PUBLIC_DATA_MODE === 'fixtures' ? 'fixtures' : 'live';
 
 const phaseLabels: Record<string, string> = {
   sandbox: 'Sandbox', checkout: 'Checkout', setup: 'Setup', reproduction: 'Reproduction',
@@ -140,7 +142,7 @@ function Detail({ incident }: { incident: Incident }) {
     </section>
     <section className="action-banner">
       <div><span className="eyebrow">Current action</span><h2>{incident.decision ? decisionLabels[incident.decision] : 'Investigation in progress'}</h2><p>{incident.status === 'recovered' ? 'Production recovery was verified after the guarded action.' : incident.status === 'pr_opened' ? 'A pull request is open for review. Nothing has been merged.' : incident.status === 'needs_human' ? 'Automatic work stopped because the evidence was not safe to act on.' : 'The controller is collecting evidence before taking action.'}</p></div>
-      {incident.actionUrl && <a className="action-link" href={incident.actionUrl} target="_blank" rel="noreferrer">{actionLabel}<span aria-hidden="true">↗</span></a>}
+      {incident.actionUrl && <a className="action-link" href={incident.actionUrl} target="_blank" rel="noreferrer">{actionLabel}</a>}
     </section>
     {incident.decision === 'rollback' && <p className="caveat">{rollbackCaveat}</p>}
     <LiveActivity incidentId={incident.id} />
@@ -180,7 +182,7 @@ function LiveWatch() {
   </div>;
 }
 
-export default function App() {
+function Dashboard() {
   const [showSetup, setShowSetup] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
@@ -189,7 +191,7 @@ export default function App() {
   const counts = useMemo(() => ({ active: snapshot.incidents.filter(item => !['recovered', 'needs_human', 'pr_opened'].includes(item.status)).length, recovered: snapshot.incidents.filter(item => item.status === 'recovered').length }), [snapshot.incidents]);
 
   return <div className="app-shell">
-    <header className="topbar"><div className="brand"><span className="brand-mark" aria-hidden="true">✳</span><span>Keel <em>deploy watch</em></span></div><div className="topbar-meta"><LiveWatch /><span className={`mode-dot ${mode}`} />{mode === 'fixtures' ? 'Rehearsal data' : 'Live controller'}<button className="refresh" onClick={() => setShowSetup(value => !value)} type="button">Setup</button><button className="refresh" onClick={() => setRefresh(value => value + 1)} type="button">Refresh</button></div></header>
+    <header className="topbar"><div className="brand"><span className="brand-mark" aria-hidden="true">K</span><span>Keel <em>deploy watch</em></span></div><div className="topbar-meta"><LiveWatch /><span className={`mode-dot ${mode}`} />{mode === 'fixtures' ? 'Rehearsal data' : 'Live controller'}<button className="refresh" onClick={() => setShowSetup(value => !value)} type="button">Setup</button><button className="refresh" onClick={() => setRefresh(value => value + 1)} type="button">Refresh</button></div></header>
     <div className="workspace">
       <aside className="sidebar"><div className="sidebar-heading"><div><p className="eyebrow">Operations</p><h2>Incidents</h2></div><span className="count">{snapshot.incidents.length}</span></div><div className="sidebar-stats"><span><strong>{counts.active}</strong> active</span><span><strong>{counts.recovered}</strong> recovered</span></div>
         {snapshot.loading && <p className="state-message">Loading incident evidence…</p>}
@@ -197,7 +199,56 @@ export default function App() {
         {!snapshot.loading && !snapshot.error && snapshot.incidents.length === 0 && <p className="state-message">No incidents recorded yet.</p>}
         <nav className="incident-list" aria-label="Incidents">{snapshot.incidents.map(incident => <IncidentCard key={incident.id} incident={incident} selected={selected?.id === incident.id} onSelect={() => setSelectedId(incident.id)} />)}</nav>
       </aside>
-      {showSetup ? <Setup onClose={() => setShowSetup(false)} /> : selected ? <Detail incident={selected} /> : <main className="empty-detail"><span className="empty-icon">✳</span><h1>No incident selected</h1><p>When the controller records an incident, its evidence and recovery path will appear here.</p></main>}
+      {showSetup ? <Setup onClose={() => setShowSetup(false)} /> : selected ? <Detail incident={selected} /> : <main className="empty-detail"><span className="empty-icon">K</span><h1>No incident selected</h1><p>When the controller records an incident, its evidence and recovery path will appear here.</p></main>}
     </div>
   </div>;
+}
+
+function Login({ onAuthenticated }: { onAuthenticated: () => void }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!response.ok) { setError('Invalid username or password.'); return; }
+      onAuthenticated();
+    } catch { setError('The controller is unavailable. Start it and try again.'); }
+    finally { setBusy(false); }
+  }
+
+  return <main className="login-shell"><form className="login-card" onSubmit={submit}>
+    <span className="brand-mark" aria-hidden="true">K</span><p className="eyebrow">Keel deploy watch</p><h1>Sign in to the incident desk</h1>
+    <p className="login-note">Use the local dashboard credentials configured in the controller environment.</p>
+    <label>Username<input autoComplete="username" value={username} onChange={event => setUsername(event.target.value)} required /></label>
+    <label>Password<input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required /></label>
+    {error && <p className="login-error" role="alert">{error}</p>}
+    <button className="action" disabled={busy} type="submit">{busy ? 'Signing in…' : 'Sign in'}</button>
+  </form></main>;
+}
+
+function AuthenticatedApp() {
+  const [authenticated, setAuthenticated] = useState(mode === 'fixtures' ? true : false);
+  const [checking, setChecking] = useState(mode !== 'fixtures');
+  useEffect(() => {
+    if (mode === 'fixtures') return;
+    void fetch('/api/auth/session', { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+      .then(response => { if (response.ok) setAuthenticated(true); })
+      .catch(() => undefined)
+      .finally(() => setChecking(false));
+  }, []);
+  if (checking) return <main className="login-shell"><p className="muted">Checking dashboard session…</p></main>;
+  return authenticated ? <Dashboard /> : <Login onAuthenticated={() => setAuthenticated(true)} />;
+}
+
+export default function App() {
+  return <AuthenticatedApp />;
 }

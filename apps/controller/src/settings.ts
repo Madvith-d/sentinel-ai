@@ -1,6 +1,3 @@
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { Database } from 'bun:sqlite';
 import type { IncidentStore } from './incident-store';
 
 export interface SettingField {
@@ -60,14 +57,10 @@ export const settingFields: SettingField[] = [
 
 const allowed = new Set(settingFields.map(field => field.key));
 
-export function applyStoredSettings(databasePath: string): void {
-  if (databasePath !== ':memory:') mkdirSync(dirname(databasePath), { recursive: true });
-  const database = new Database(databasePath, { create: true });
-  database.exec('CREATE TABLE IF NOT EXISTS integration_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
-  const rows = database.query('SELECT key, value FROM integration_settings').all() as Array<{ key: string; value: string }>;
-  database.close();
-  for (const row of rows) {
-    if (allowed.has(row.key) && row.value) process.env[row.key] = row.value;
+export async function applyStoredSettings(store: Pick<IncidentStore, 'readSettings'>): Promise<void> {
+  const saved = await store.readSettings();
+  for (const [key, value] of Object.entries(saved)) {
+    if (allowed.has(key) && value) process.env[key] = value;
   }
 }
 
@@ -76,7 +69,7 @@ export function createSettingsApi(store: Pick<IncidentStore, 'readSettings' | 'w
     const url = new URL(request.url);
     if (url.pathname !== '/api/settings') return null;
     if (request.method === 'GET') {
-      const saved = store.readSettings();
+      const saved = await store.readSettings();
       return Response.json({
         restartRequired: true,
         fields: settingFields.filter(field => !field.hidden).map(field => {
@@ -117,7 +110,7 @@ export function createSettingsApi(store: Pick<IncidentStore, 'readSettings' | 'w
     if (next.RAILWAY_SERVICE_ID) next.CONTROLLER_ROLLBACK_PROJECT_ID = next.RAILWAY_SERVICE_ID;
     if (next.RENDER_SERVICE_ID) next.CONTROLLER_ROLLBACK_PROJECT_ID = next.RENDER_SERVICE_ID;
     if (next.COOLIFY_APPLICATION_ID) next.CONTROLLER_ROLLBACK_PROJECT_ID = next.COOLIFY_APPLICATION_ID;
-    store.writeSettings(next);
+    await store.writeSettings(next);
     return Response.json({ ok: true, saved: Object.keys(next), restartRequired: true });
   };
 }

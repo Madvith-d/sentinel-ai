@@ -79,7 +79,7 @@ export async function installationToken(appId: string, pem: string, installation
 
 /** Prefer a short-lived GitHub App token. Fall back to a saved personal token. */
 export async function githubCredentials(store: Pick<IncidentStore, 'readSettings'>): Promise<{ write?: string; read?: string }> {
-  const saved = store.readSettings();
+  const saved = await store.readSettings();
   const appId = saved.GITHUB_APP_ID || process.env.GITHUB_APP_ID;
   const pem = saved.GITHUB_APP_PEM || process.env.GITHUB_APP_PEM;
   const installationId = saved.GITHUB_INSTALLATION_ID || process.env.GITHUB_INSTALLATION_ID;

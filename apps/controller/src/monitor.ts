@@ -122,7 +122,7 @@ async function saveAndNotify(
   incident: Incident,
   options: MonitorOptions,
 ): Promise<void> {
-  options.store.save(incident);
+  await options.store.save(incident);
   if (!options.actions?.notify) return;
   try {
     const result = await options.actions.notify(incident);
@@ -132,7 +132,7 @@ async function saveAndNotify(
     incident.events.push(event(new Date().toISOString(), 'notification_failed', 'Notification failed unexpectedly; incident action was not retried.'));
     incident.evidence.push('Notification failed unexpectedly; the incident remains available locally.');
   }
-  options.store.save(incident);
+  await options.store.save(incident);
 }
 
 async function finishRemediation(
@@ -151,7 +151,7 @@ async function finishRemediation(
 
   incident.status = 'remediating';
   incident.events.push(event(new Date().toISOString(), 'remediation_started', 'Dispatching bounded fix-PR remediation.'));
-  options.store.save(incident);
+  await options.store.save(incident);
   try {
     const result = await remediate(incident);
     if (result.ok) {
@@ -190,7 +190,6 @@ function makeBuildFailureIncident(
     deploymentId: deployment.id,
     commitSha: deployment.commitSha,
     deploymentUrl: deployment.immutableUrl ? safeImmutableUrl(deployment.immutableUrl, options.provider) : undefined,
-    deploymentUrl: deployment.immutableUrl ? safeImmutableUrl(deployment.immutableUrl) : undefined,
     decision: 'fix_pr',
     evidence: [
       'A production-targeted deployment failed before activation; the current healthy production deployment was not rolled back.',
@@ -255,7 +254,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
       const latest = await options.provider.getLatestDeploymentStatus(options.projectId);
       if (latest?.state === 'ERROR') {
         const id = incidentId(options.projectId, latest.id, 'build');
-        const existing = options.store.get(id);
+        const existing = await options.store.get(id);
         if (existing) return { action: 'incident', incident: existing, duplicate: true };
         const incident = makeBuildFailureIncident(options, latest, now().toISOString());
         await appendDeploymentLogs(incident, options, latest.id);
@@ -293,7 +292,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
   }
 
   const observedAt = now().toISOString();
-  const streak = options.store.recordProbe(options.projectId, current.id, probePath, currentProbe, observedAt);
+  const streak = await options.store.recordProbe(options.projectId, current.id, probePath, currentProbe, observedAt);
   if (currentProbe !== 'fail') {
     return {
       action: 'monitor',
@@ -310,7 +309,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
   }
 
   const id = incidentId(options.projectId, current.id, probePath);
-  const existing = options.store.get(id);
+  const existing = await options.store.get(id);
   if (existing) {
     let updated = false;
     const lastActivity = Date.parse(existing.events.at(-1)?.at ?? existing.detectedAt);
@@ -321,7 +320,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
       existing.decision = 'escalate';
       existing.evidence.push('A previous controller action did not reach a recorded terminal result; no retry was made.');
       existing.events.push(event(now().toISOString(), 'escalation', 'An interrupted or stalled rollback requires human verification.'));
-      options.store.save(existing);
+      await options.store.save(existing);
       updated = true;
     }
     const fixAttempts = existing.events.filter(item => item.type === 'remediation_started').length;
@@ -329,13 +328,13 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
     if (fixStoppedEarly && options.actions?.remediate) {
       const protectedPredecessor = existing.evidence.some(line => /predecessor probe \(unknown\): HTTP 40[13]/.test(line));
       if (protectedPredecessor && existing.deploymentId && options.allowlistedProjectIds.has(existing.projectId)
-        && options.store.claimRollback(existing.deploymentId, now().toISOString())) {
+        && await options.store.claimRollback(existing.deploymentId, now().toISOString())) {
         try {
           const previous = await options.provider.getPreviousDeployment(existing.projectId, existing.deploymentId);
           if (previous) {
             existing.status = 'rolling_back';
             existing.events.push(event(now().toISOString(), 'rollback_started', 'Restoring the previous deployment. Its URL is protected, so the app probe could not read it.'));
-            options.store.save(existing);
+            await options.store.save(existing);
             const rollback = await options.provider.rollbackProductionTo(existing.projectId, previous.id);
             existing.events.push(event(now().toISOString(), 'rollback_completed', `Production alias moved to the previous deployment: ${rollback.actionUrl}`));
             const verification = await options.provider.probeProduction(existing.projectId, existing.probePath ?? '/api/tasks');
@@ -347,7 +346,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
         }
       }
       existing.events.push(event(now().toISOString(), 'remediation_retry', 'Retrying the fix. The previous attempt stopped before a pull request.'));
-      options.store.save(existing);
+      await options.store.save(existing);
       await finishRemediation(existing, options);
       return { action: 'incident', incident: existing, duplicate: true, updated: true };
     }
@@ -433,8 +432,8 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
     return { action: 'incident', incident };
   }
 
-  options.store.save(incident);
-  if (!options.store.claimRollback(current.id, now().toISOString())) {
+  await options.store.save(incident);
+  if (!await options.store.claimRollback(current.id, now().toISOString())) {
     incident.status = 'needs_human';
     incident.decision = 'escalate';
     incident.evidence.push('A rollback attempt was already recorded for this deployment; no repeat action was made.');
@@ -445,7 +444,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
 
   incident.status = 'rolling_back';
   incident.events.push(event(now().toISOString(), 'rollback_started', 'One guarded rollback attempt was started.'));
-  options.store.save(incident);
+  await options.store.save(incident);
 
   try {
     const rollback = await options.provider.rollbackProductionTo(options.projectId, previous!.id);

@@ -13,10 +13,13 @@ import { createControllerActions, type RemediationConfig } from './actions';
 import { applyStoredSettings, createSettingsApi } from './settings';
 import { exchangeGithubManifest, githubConnectPage, githubCredentials, githubStateOk } from './github-app';
 import { pollVercelDevice, startVercelDevice } from './vercel-login';
+import { DashboardAuth } from './auth';
 
 const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const databasePath = resolve(packageDirectory, process.env.INCIDENT_DB_PATH ?? './data/incidents.sqlite');
-applyStoredSettings(databasePath);
+const databaseUrl = process.env.DATABASE_URL;
+const store = new IncidentStore(databaseUrl);
+await store.ready;
+await applyStoredSettings(store);
 
 const host = '127.0.0.1';
 const port = Number(process.env.CONTROLLER_PORT ?? 8787);
@@ -40,8 +43,6 @@ let monitorConfig: {
   rollbackEnabled: boolean;
   probePath: string;
   pollIntervalMs: number;
-  deploymentStatusIntervalMs: number;
-  provider: VercelProvider;
   deploymentStatusIntervalMs: number;
   provider: DeploymentProvider;
   platform: string;
@@ -92,19 +93,12 @@ if (monitorFlag === 'true') {
     probePath: process.env.CONTROLLER_PROBE_PATH ?? '/api/tasks',
     pollIntervalMs,
     deploymentStatusIntervalMs,
-    provider: new VercelProvider({
-      accessToken,
-      projectId,
-      productionDomain,
-      teamId: process.env.VERCEL_TEAM_ID,
-    }),
-    deploymentStatusIntervalMs,
     provider,
     platform,
   };
 }
 
-const store = new IncidentStore(databasePath);
+const dashboardAuth = new DashboardAuth(process.env.DASHBOARD_USERNAME ?? '', process.env.DASHBOARD_PASSWORD ?? '');
 let remediation: RemediationConfig | undefined;
 if (remediationFlag === 'true') {
   const required = ['REMEDIATOR_MODEL_ID', 'REMEDIATOR_MODEL_BASE_URL', 'REMEDIATOR_MODEL_API_KEY', 'E2B_REMEDIATOR_TEMPLATE'];
@@ -168,7 +162,7 @@ async function integrationRoutes(request: Request, settingsStore: typeof store):
     if (!code) return Response.json({ error: 'GitHub did not return an app code.' }, { status: 400 });
     try {
       const saved = await exchangeGithubManifest(code);
-      settingsStore.writeSettings(saved);
+      await settingsStore.writeSettings(saved);
       const slug = saved.GITHUB_APP_SLUG;
       return Response.redirect(`https://github.com/apps/${encodeURIComponent(slug)}/installations/new`, 302);
     } catch {
@@ -178,7 +172,7 @@ async function integrationRoutes(request: Request, settingsStore: typeof store):
   if (url.pathname === '/api/github/installed' && request.method === 'GET') {
     const installationId = url.searchParams.get('installation_id');
     if (!installationId || !/^\d+$/.test(installationId)) return Response.json({ error: 'GitHub installation id was missing.' }, { status: 400 });
-    settingsStore.writeSettings({ GITHUB_INSTALLATION_ID: installationId });
+    await settingsStore.writeSettings({ GITHUB_INSTALLATION_ID: installationId });
     return Response.redirect(`${dashboard}?setup=github`, 302);
   }
   if (url.pathname === '/api/vercel/connect' && request.method === 'POST') {
@@ -196,7 +190,7 @@ async function integrationRoutes(request: Request, settingsStore: typeof store):
       const result = await pollVercelDevice(vercelDevice.code);
       if (result.pending) return Response.json({ pending: true });
       if (!result.accessToken) return Response.json({ error: 'Vercel sign-in did not finish.' }, { status: 502 });
-      settingsStore.writeSettings({
+      await settingsStore.writeSettings({
         VERCEL_ACCESS_TOKEN: result.accessToken,
         ...(result.refreshToken ? { VERCEL_REFRESH_TOKEN: result.refreshToken } : {}),
       });
@@ -214,6 +208,11 @@ const server = Bun.serve({
   port,
   fetch: async (request, bunServer) => {
     const url = new URL(request.url);
+    const authResponse = await dashboardAuth.handle(request);
+    if (authResponse) return authResponse;
+    if (url.pathname.startsWith('/api/') && !dashboardAuth.isPublic(url.pathname) && !dashboardAuth.isAuthorized(request)) {
+      return dashboardAuth.unauthorized();
+    }
     const connect = await integrationRoutes(request, store);
     if (connect) return connect;
     const settingsResponse = await settingsApi(request);
@@ -275,7 +274,7 @@ async function shutdown() {
   shuttingDown = true;
   await worker?.stop();
   server.stop();
-  store.close();
+  await store.close();
 }
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

@@ -40,10 +40,10 @@ The rehearsal command above is the fixture path. To start pieces by hand:
 
 ```sh
 bun install
-VITE_DATA_MODE=fixtures bun run --cwd apps/dashboard dev
+NEXT_PUBLIC_DATA_MODE=fixtures bun run --cwd apps/dashboard dev
 ```
 
-For a hand-started live controller, omit `VITE_DATA_MODE=fixtures` and set
+For a hand-started live controller, omit `NEXT_PUBLIC_DATA_MODE=fixtures` and set
 `CONTROLLER_API_URL` in `apps/dashboard/.env` to its localhost origin. Leave
 `CONTROLLER_MONITOR_ENABLED` false until a public-domain probe has been checked
 against both the production hostname and the immutable deployment URL.

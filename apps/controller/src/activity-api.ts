@@ -7,7 +7,7 @@ const HEARTBEAT_MS = 15_000;
 
 export interface ActivityApiOptions {
   hub: ActivityHub;
-  lookupIncident: (id: string) => Incident | undefined;
+  lookupIncident: (id: string) => Incident | undefined | Promise<Incident | undefined>;
   dispatch: (runId: string, incident: Incident, source: ActivitySource) => void;
   token?: string;
   /** True when dedicated model, E2B and GitHub credentials are configured. */
@@ -129,7 +129,7 @@ export function createActivityApi(options: ActivityApiOptions) {
         return Response.json({ error: 'Invalid incident ID.' }, { status: 400 });
       }
       if (mode !== 'ai' && mode !== 'rehearsal') return Response.json({ error: 'Mode must be ai or rehearsal.' }, { status: 400 });
-      const incident = options.lookupIncident(incidentId);
+      const incident = await options.lookupIncident(incidentId);
       if (!incident) return Response.json({ error: 'Incident not found.' }, { status: 404 });
       if (mode === 'ai' && !options.aiConfigured) {
         return Response.json({ error: 'Dedicated model, E2B and GitHub credentials are not configured; enable CONTROLLER_REMEDIATION_ENABLED.' }, { status: 503 });
