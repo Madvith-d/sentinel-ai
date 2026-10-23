@@ -23,7 +23,8 @@ describe('github app connect', () => {
     expect(disconnectFields.github).toContain('GITHUB_INSTALLATION_ID');
     expect(disconnectFields.github).not.toContain('GITHUB_APP_PEM');
     expect(disconnectFields.vercel).toContain('VERCEL_ACCESS_TOKEN');
-    expect(disconnectFields.vercel).not.toContain('VERCEL_TEAM_ID');
+    expect(disconnectFields.vercel).toContain('VERCEL_TEAM_ID');
+    expect(disconnectFields.vercel).toContain('VERCEL_PRODUCTION_DOMAIN');
   });
 
   it('sends setup to the existing bot install page', () => {

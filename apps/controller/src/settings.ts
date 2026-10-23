@@ -6,17 +6,19 @@ export interface SettingField {
   label: string;
   secret: boolean;
   hidden?: boolean;
+  /** Set in the dashboard. Never filled from the controller environment. */
+  clientOwned?: boolean;
 }
 
 export const settingFields: SettingField[] = [
   { group: 'Platform', key: 'CONTROLLER_PLATFORM', label: 'Platform (vercel, railway, render, coolify)', secret: false },
   { group: 'Vercel', key: 'VERCEL_ACCESS_TOKEN', label: 'Access token (filled by Connect Vercel)', secret: true },
   { group: 'Vercel', key: 'VERCEL_REFRESH_TOKEN', label: 'Refresh token', secret: true },
-  { group: 'Vercel', key: 'VERCEL_TEAM_ID', label: 'Team id', secret: false },
-  { group: 'Vercel', key: 'VERCEL_PROJECT_ID', label: 'Project id', secret: false },
-  { group: 'Vercel', key: 'CONTROLLER_ROLLBACK_PROJECT_ID', label: 'Rollback project id', secret: false, hidden: true },
-  { group: 'Vercel', key: 'VERCEL_PRODUCTION_DOMAIN', label: 'Public site link (host only)', secret: false },
-  { group: 'Vercel', key: 'CONTROLLER_PROBE_PATH', label: 'Probe path', secret: false },
+  { group: 'Vercel', key: 'VERCEL_TEAM_ID', label: 'Team id', secret: false, clientOwned: true },
+  { group: 'Vercel', key: 'VERCEL_PROJECT_ID', label: 'Project id', secret: false, clientOwned: true },
+  { group: 'Vercel', key: 'CONTROLLER_ROLLBACK_PROJECT_ID', label: 'Rollback project id', secret: false, hidden: true, clientOwned: true },
+  { group: 'Vercel', key: 'VERCEL_PRODUCTION_DOMAIN', label: 'Public site link (host only)', secret: false, clientOwned: true },
+  { group: 'Vercel', key: 'CONTROLLER_PROBE_PATH', label: 'Probe path', secret: false, clientOwned: true },
   { group: 'Vercel', key: 'CONTROLLER_MONITOR_ENABLED', label: 'Monitoring (true/false)', secret: false },
   { group: 'Vercel', key: 'CONTROLLER_ROLLBACK_ENABLED', label: 'Rollback (true/false)', secret: false },
   { group: 'Railway', key: 'RAILWAY_TOKEN', label: 'API token', secret: true },
@@ -39,8 +41,8 @@ export const settingFields: SettingField[] = [
   { group: 'GitHub', key: 'GITHUB_WEBHOOK_SECRET', label: 'Webhook secret', secret: true },
   { group: 'GitHub', key: 'GH_TOKEN', label: 'Personal token fallback for pull requests', secret: true },
   { group: 'GitHub', key: 'GITHUB_READ_TOKEN', label: 'Personal read-token fallback', secret: true },
-  { group: 'GitHub', key: 'REMEDIATOR_REPOSITORY', label: 'Repository (owner/name)', secret: false },
-  { group: 'GitHub', key: 'REMEDIATOR_ALLOWED_REPOSITORY', label: 'Allowed repository', secret: false, hidden: true },
+  { group: 'GitHub', key: 'REMEDIATOR_REPOSITORY', label: 'Repository (owner/name)', secret: false, clientOwned: true },
+  { group: 'GitHub', key: 'REMEDIATOR_ALLOWED_REPOSITORY', label: 'Allowed repository', secret: false, hidden: true, clientOwned: true },
   { group: 'Sandbox', key: 'E2B_API_KEY', label: 'E2B API key', secret: true },
   { group: 'Sandbox', key: 'E2B_REMEDIATOR_TEMPLATE', label: 'E2B template', secret: false },
   { group: 'Sandbox', key: 'CONTROLLER_REMEDIATION_ENABLED', label: 'Remediation (true/false)', secret: false },
@@ -58,10 +60,16 @@ export const settingFields: SettingField[] = [
 
 const allowed = new Set(settingFields.map(field => field.key));
 
+const clientOwned = new Set(settingFields.filter(field => field.clientOwned).map(field => field.key));
+
 export async function applyStoredSettings(store: Pick<IncidentStore, 'readSettings'>): Promise<void> {
   const saved = await store.readSettings();
+  for (const key of clientOwned) {
+    if (saved[key]) process.env[key] = saved[key];
+    else delete process.env[key];
+  }
   for (const [key, value] of Object.entries(saved)) {
-    if (allowed.has(key) && value) process.env[key] = value;
+    if (allowed.has(key) && !clientOwned.has(key) && value) process.env[key] = value;
   }
 }
 
@@ -74,7 +82,7 @@ export function createSettingsApi(store: Pick<IncidentStore, 'readSettings' | 'w
       return Response.json({
         restartRequired: true,
         fields: settingFields.filter(field => !field.hidden).map(field => {
-          const value = saved[field.key] || process.env[field.key] || '';
+          const value = saved[field.key] || (field.clientOwned ? '' : process.env[field.key] || '');
           return {
             ...field,
             configured: Boolean(value),

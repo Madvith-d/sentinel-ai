@@ -108,9 +108,10 @@ if (remediationFlag === 'true') {
   const missing = required.filter(key => !process.env[key]);
   const githubAppReady = Boolean(process.env.GITHUB_APP_ID && process.env.GITHUB_APP_PEM && process.env.GITHUB_INSTALLATION_ID);
   if (!process.env.GITHUB_READ_TOKEN && !githubAppReady) missing.push('GITHUB_READ_TOKEN or a connected GitHub app');
+  if (!process.env.REMEDIATOR_REPOSITORY) missing.push('REMEDIATOR_REPOSITORY');
   if (missing.length) throw new Error(`Remediation requires configuration: ${missing.join(', ')}.`);
   remediation = {
-    repository: process.env.REMEDIATOR_REPOSITORY ?? 'iotserver24/nexathon',
+    repository: process.env.REMEDIATOR_REPOSITORY ?? '',
     setupCommand: process.env.REMEDIATOR_SETUP_COMMAND ?? 'bun install --frozen-lockfile --filter ./apps/sample',
     reproduceCommand: process.env.REMEDIATOR_REPRODUCE_COMMAND ?? 'bun test apps/sample/tests/filter.repro.test.ts',
     testCommand: process.env.REMEDIATOR_TEST_COMMAND ?? 'bun run --cwd apps/sample test',

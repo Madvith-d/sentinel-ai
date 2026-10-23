@@ -103,9 +103,10 @@ export function Setup({ onClose }: { onClose: () => void }) {
     try {
       const started = await fetch('/api/vercel/connect', { method: 'POST', headers: { Accept: 'application/json' } });
       if (!started.ok) throw new Error('Vercel sign-in did not start.');
-      const body = await started.json() as { userCode: string; verificationUri: string; intervalMs: number };
-      setVercel({ userCode: body.userCode, verificationUri: body.verificationUri, status: 'Waiting for approval.' });
-      window.open(body.verificationUri, '_blank', 'noopener');
+      const body = await started.json() as { userCode: string; intervalMs: number };
+      const verificationUri = `https://vercel.com/oauth/device?user_code=${encodeURIComponent(body.userCode)}`;
+      setVercel({ userCode: body.userCode, verificationUri, status: 'Waiting for approval.' });
+      window.open(verificationUri, '_blank', 'noopener');
       const timer = window.setInterval(async () => {
         const poll = await fetch('/api/vercel/connect', { headers: { Accept: 'application/json' } });
         if (poll.status === 404) { window.clearInterval(timer); setError('Vercel sign-in expired. Start it again.'); return; }
@@ -214,9 +215,8 @@ export function Setup({ onClose }: { onClose: () => void }) {
       <div className="setup-hero-copy"><div><h2>Repository</h2><p>Choose the repo the bot can open pull requests on.</p></div></div>
       <label className="setup-field">
         <span>Repository</span>
-        <select value={draft.REMEDIATOR_REPOSITORY ?? ''} onChange={event => void choose('REMEDIATOR_REPOSITORY', event.target.value)}>
+        <select value={repos.includes(draft.REMEDIATOR_REPOSITORY ?? '') ? draft.REMEDIATOR_REPOSITORY : ''} onChange={event => void choose('REMEDIATOR_REPOSITORY', event.target.value)}>
           <option value="">Choose a repository</option>
-          {draft.REMEDIATOR_REPOSITORY && !repos.includes(draft.REMEDIATOR_REPOSITORY) && <option value={draft.REMEDIATOR_REPOSITORY}>{draft.REMEDIATOR_REPOSITORY}</option>}
           {repos.map(repo => <option key={repo} value={repo}>{repo}</option>)}
         </select>
       </label>
@@ -239,9 +239,8 @@ export function Setup({ onClose }: { onClose: () => void }) {
       </div>
       <label className="setup-field">
         <span>Vercel project</span>
-        <select value={draft.VERCEL_PROJECT_ID ?? ''} onChange={event => void choose('VERCEL_PROJECT_ID', event.target.value)}>
+        <select value={projects.some(project => project.id === draft.VERCEL_PROJECT_ID) ? draft.VERCEL_PROJECT_ID : ''} onChange={event => void choose('VERCEL_PROJECT_ID', event.target.value)}>
           <option value="">Choose a project</option>
-          {draft.VERCEL_PROJECT_ID && !projects.some(project => project.id === draft.VERCEL_PROJECT_ID) && <option value={draft.VERCEL_PROJECT_ID}>{draft.VERCEL_PROJECT_ID}</option>}
           {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
         </select>
       </label>

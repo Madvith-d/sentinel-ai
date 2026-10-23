@@ -22,11 +22,11 @@ export async function startVercelDevice(): Promise<VercelDevice> {
   const body = await response.json() as {
     device_code?: string; user_code?: string; verification_uri?: string; interval?: number; expires_in?: number;
   };
-  if (!body.device_code || !body.user_code || !body.verification_uri) throw new Error('Vercel did not start sign-in.');
+  if (!body.device_code || !body.user_code) throw new Error('Vercel did not start sign-in.');
   return {
     deviceCode: body.device_code,
     userCode: body.user_code,
-    verificationUri: body.verification_uri,
+    verificationUri: `https://vercel.com/oauth/device?user_code=${encodeURIComponent(body.user_code)}`,
     intervalMs: Math.max(5, body.interval ?? 5) * 1000,
     expiresAt: Date.now() + (body.expires_in ?? 600) * 1000,
     tokenEndpoint: config.token_endpoint,
