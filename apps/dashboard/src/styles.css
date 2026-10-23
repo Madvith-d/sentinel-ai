@@ -227,6 +227,8 @@ h1, h2, strong { font-family: 'IBM Plex Sans', sans-serif; }
 }
 .action-banner h2 { margin: 0 0 5px; color: #e0e0e0; font-size: 17px; font-weight: 500; }
 .action-banner p { max-width: 650px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.rollback-steps { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.rollback-steps li { padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; color: #d7d7d7; font-size: 13px; }
 .action-link { flex: none; padding: 9px 12px; border: 1px solid #dedede; border-radius: 6px; background: #dedede; color: #111; font-size: 11px; font-weight: 600; text-decoration: none; }
 .action-link:hover { border-color: #fff; background: #fff; }
 .action-link span { margin-left: 8px; }

@@ -43,12 +43,35 @@ function StatusPill({ status }: { status: Incident['status'] }) {
   return <span className={`status status-${status}`}>{statusLabels[status]}</span>;
 }
 
+function rolledBack(incident: Incident) {
+  return incident.events.some(event => event.type === 'rollback_started' || event.type === 'rollback_completed');
+}
+
+function actionSummary(incident: Incident) {
+  const restored = rolledBack(incident);
+  if (incident.status === 'rolling_back') return 'Rolling production back to the previous deploy. The fix starts after that.';
+  if (incident.status === 'remediating' && restored) return 'Production was rolled back. The agent is fixing the bad commit and will open a pull request.';
+  if (incident.status === 'remediating') return 'The agent is fixing the bad commit and will open a pull request.';
+  if (incident.status === 'pr_opened' && restored) return 'Production was rolled back, then a fix pull request was opened. Nothing has been merged.';
+  if (incident.status === 'pr_opened') return 'A pull request is open for review. Nothing has been merged.';
+  if (incident.status === 'recovered' && restored) return 'Production was restored to the previous deploy. The fix follows that rollback.';
+  if (incident.status === 'recovered') return 'Production recovery was verified after the guarded action.';
+  if (incident.status === 'needs_human') return 'Automatic work stopped because the evidence was not safe to act on.';
+  return 'The controller is collecting evidence before taking action.';
+}
+
+function decisionSummary(incident: Incident) {
+  if (rolledBack(incident) && incident.decision === 'fix_pr') return 'Rolled back, then fix PR';
+  if (rolledBack(incident) && incident.status === 'remediating') return 'Rolled back, fix in progress';
+  return incident.decision ? decisionLabels[incident.decision] : 'Pending';
+}
+
 function IncidentCard({ incident, selected, onSelect }: { incident: Incident; selected: boolean; onSelect: () => void }) {
   return (
     <button className={`incident-card${selected ? ' selected' : ''}`} onClick={onSelect} type="button">
       <span className="card-topline"><span>{formatDate(incident.detectedAt)}</span><StatusPill status={incident.status} /></span>
       <strong>{kindLabels[incident.kind]}</strong>
-      <span className="card-meta">{incident.decision ? decisionLabels[incident.decision] : 'Pending'} · {shortSha(incident.commitSha)} · {incident.probePath ?? 'build'}</span>
+      <span className="card-meta">{decisionSummary(incident)} · {shortSha(incident.commitSha)} · {incident.probePath ?? 'build'}</span>
       <span className="card-summary">{incident.evidence[0] ?? 'No evidence recorded.'}</span>
     </button>
   );
@@ -95,7 +118,7 @@ function LiveActivity({ incidentId }: { incidentId: string }) {
     {!run && <p className="activity-empty">
       {mode === 'fixtures'
         ? 'Fixture data only. Run the local controller to watch an agent work.'
-        : 'No agent run for this incident yet. Start one with `bun run --cwd apps/controller start:run -- --incident=' + incidentId + '`.'}
+        : 'No agent run is streaming yet. Rollback and fix steps also appear in the incident timeline below.'}
     </p>}
     {run && <>
       <p className="activity-now">{events.at(-1)?.message ?? 'Waiting for the first progress event.'}</p>
@@ -133,7 +156,7 @@ function Detail({ incident }: { incident: Incident }) {
       </ul>
     </section>
     <section className="signal-grid" aria-label="Incident summary">
-      <div><span>Decision</span><strong>{incident.decision ? decisionLabels[incident.decision] : 'Pending'}</strong></div>
+      <div><span>Decision</span><strong>{decisionSummary(incident)}</strong></div>
       <div><span>Revision</span><strong className="mono">{incident.commitSha ?? '—'}</strong></div>
       <div><span>Probe route</span><strong className="mono">{incident.probePath ?? 'Build status'}</strong></div>
       <div><span>Production host</span><strong className="mono">{hostOf(incident.deploymentUrl)}</strong></div>
@@ -141,10 +164,14 @@ function Detail({ incident }: { incident: Incident }) {
       <div><span>Timeline</span><strong>{incident.events.length} events</strong></div>
     </section>
     <section className="action-banner">
-      <div><span className="eyebrow">Current action</span><h2>{incident.decision ? decisionLabels[incident.decision] : 'Investigation in progress'}</h2><p>{incident.status === 'recovered' ? 'Production recovery was verified after the guarded action.' : incident.status === 'pr_opened' ? 'A pull request is open for review. Nothing has been merged.' : incident.status === 'needs_human' ? 'Automatic work stopped because the evidence was not safe to act on.' : 'The controller is collecting evidence before taking action.'}</p></div>
+      <div><span className="eyebrow">Current action</span><h2>{decisionSummary(incident)}</h2><p>{actionSummary(incident)}</p></div>
       {incident.actionUrl && <a className="action-link" href={incident.actionUrl} target="_blank" rel="noreferrer">{actionLabel}</a>}
     </section>
-    {incident.decision === 'rollback' && <p className="caveat">{rollbackCaveat}</p>}
+    {rolledBack(incident) && <ol className="rollback-steps">
+      <li>Rollback — production moved back to the previous deploy.</li>
+      <li>{incident.status === 'pr_opened' ? 'Fix — a pull request is open for that bad commit.' : incident.status === 'needs_human' ? 'Fix — automatic work stopped and needs a person.' : 'Fix — the agent is working on the bad commit.'}</li>
+    </ol>}
+    {(incident.decision === 'rollback' || rolledBack(incident)) && <p className="caveat">{rollbackCaveat}</p>}
     <LiveActivity incidentId={incident.id} />
     <div className="detail-columns"><Evidence incident={incident} /><Timeline events={incident.events} /></div>
   </main>;
