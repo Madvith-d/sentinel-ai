@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { generateFixInE2B, publishDraftPr, type ProviderConfig, type RemediationRequest } from '@nexathon/remediator';
-import { notifyIncident, redact, type Incident } from '@nexathon/notifier';
+import { notifyIncident, redact, resolveSmtpConfig, type Incident } from '@nexathon/notifier';
 import { githubCredentials } from './github-app';
 import type { IncidentStore } from './incident-store';
 import type { ActivityHub } from './activity';
@@ -93,8 +93,17 @@ async function runRemediation(incident: Incident, config: RemediationConfig, hub
 export function createControllerActions(config: ControllerActionsConfig, hub?: ActivityHub): MonitorActions {
   return {
     notify: async incident => {
-      const result = await notifyIncident(incident, { webhookUrl: config.slackWebhookUrl });
-      const sentByEmail = Boolean(process.env.SMTP_HOST && process.env.SMTP_FROM && process.env.SMTP_TO);
+      const saved = config.settings ? await config.settings.readSettings() : {};
+      const env = { ...process.env };
+      if (saved.SMTP_FROM) env.SMTP_FROM = saved.SMTP_FROM;
+      if (saved.SMTP_TO) env.SMTP_TO = saved.SMTP_TO;
+      let smtp;
+      try { smtp = resolveSmtpConfig(env); }
+      catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : 'SMTP configuration is invalid.' };
+      }
+      const result = await notifyIncident(incident, { webhookUrl: config.slackWebhookUrl, ...(smtp ? { smtp } : {}) });
+      const sentByEmail = Boolean(smtp);
       return result.ok
         ? { ok: true, message: sentByEmail ? 'Email notification sent.' : 'Slack notification sent.' }
         : { ok: false, message: result.message };

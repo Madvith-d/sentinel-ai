@@ -49,6 +49,7 @@ export const settingFields: SettingField[] = [
   { group: 'Model', key: 'REMEDIATOR_MODEL_API_KEY', label: 'Model API key', secret: true },
   { group: 'Model', key: 'REMEDIATOR_MODEL_ID', label: 'Model id', secret: false },
   { group: 'Model', key: 'REMEDIATOR_MODEL_BASE_URL', label: 'Model base URL', secret: false },
+  { group: 'Email', key: 'SMTP_FROM', label: 'From address', secret: false },
   { group: 'Email', key: 'SMTP_TO', label: 'To address', secret: false },
 ];
 
