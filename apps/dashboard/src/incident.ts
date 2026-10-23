@@ -23,6 +23,10 @@ function date(value: unknown): string {
 }
 
 export function parseIncident(value: unknown): Incident {
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value) as unknown; }
+    catch { throw new Error('Invalid incident response.'); }
+  }
   const item = record(value);
   if (!kinds.includes(String(item.kind)) || !statuses.includes(String(item.status))
     || (item.decision !== undefined && !decisions.includes(String(item.decision)))) throw new Error('Invalid incident state.');
@@ -44,6 +48,10 @@ export function parseIncident(value: unknown): Incident {
 }
 
 export function parseIncidentList(value: unknown): Incident[] {
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value) as unknown; }
+    catch { throw new Error('Expected an incident array with at most 500 entries.'); }
+  }
   if (!Array.isArray(value) || value.length > 500) throw new Error('Expected an incident array with at most 500 entries.');
   const incidents = value.map(parseIncident);
   if (new Set(incidents.map(item => item.id)).size !== incidents.length) throw new Error('Duplicate incident IDs in response.');

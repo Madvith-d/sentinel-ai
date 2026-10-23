@@ -10,6 +10,12 @@ interface MemoryState {
 }
 type StoreValue<T> = T | Promise<T>;
 
+function storedIncident(value: unknown): Incident {
+  const parsed = typeof value === 'string' ? JSON.parse(value) as unknown : value;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Stored incident is invalid.');
+  return parsed as Incident;
+}
+
 function memoryState(): MemoryState {
   return { incidents: new Map(), probeStreaks: new Map(), rollbackAttempts: new Set(), settings: new Map() };
 }
@@ -70,7 +76,7 @@ export class IncidentStore {
     }
     return this.sql!`
       INSERT INTO incidents (id, detected_at, incident_json)
-      VALUES (${incident.id}, ${incident.detectedAt}, ${JSON.stringify(incident)}::jsonb)
+      VALUES (${incident.id}, ${incident.detectedAt}, ${this.sql!.json(incident)})
       ON CONFLICT(id) DO UPDATE SET detected_at = EXCLUDED.detected_at, incident_json = EXCLUDED.incident_json
     `.then(() => undefined);
   }
@@ -78,7 +84,10 @@ export class IncidentStore {
   get(id: string): StoreValue<Incident | undefined> {
     if (this.memory) return this.memory.incidents.has(id) ? structuredClone(this.memory.incidents.get(id)!) : undefined;
     return this.sql!`SELECT incident_json FROM incidents WHERE id = ${id}`
-      .then(rows => (rows[0] as StoredIncident | undefined)?.incident_json);
+      .then(rows => {
+        const value = (rows[0] as StoredIncident | undefined)?.incident_json;
+        return value === undefined ? undefined : storedIncident(value);
+      });
   }
 
   list(limit = 500): StoreValue<Incident[]> {
@@ -88,7 +97,7 @@ export class IncidentStore {
       .slice(0, boundedLimit)
       .map(incident => structuredClone(incident));
     return this.sql!`SELECT incident_json FROM incidents ORDER BY detected_at DESC LIMIT ${boundedLimit}`
-      .then(rows => rows.map(row => (row as StoredIncident).incident_json));
+      .then(rows => rows.map(row => storedIncident((row as StoredIncident).incident_json)));
   }
 
   recordProbe(

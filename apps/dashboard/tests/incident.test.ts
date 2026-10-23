@@ -13,6 +13,11 @@ describe('incident response parsing', () => {
     expect(parsed[1].events.map(event => event.type)).toEqual(['first', 'later']);
   });
 
+  test('accepts an incident that was stored as a JSON string', () => {
+    const parsed = parseIncidentList([JSON.stringify(incident)]);
+    expect(parsed.map(item => item.id)).toEqual(['one']);
+  });
+
   test('rejects duplicate IDs and invalid states', () => {
     expect(() => parseIncidentList([incident, incident])).toThrow('Duplicate incident IDs');
     expect(() => parseIncident({ ...incident, status: 'done' })).toThrow('Invalid incident state');
