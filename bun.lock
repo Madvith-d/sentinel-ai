@@ -1,0 +1,40 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "nexathon",
+    },
+    "apps/controller": {
+      "name": "@nexathon/controller",
+      "version": "0.1.0",
+    },
+    "apps/dashboard": {
+      "name": "@nexathon/dashboard",
+      "version": "0.1.0",
+    },
+    "apps/sample": {
+      "name": "@nexathon/sample",
+      "version": "0.1.0",
+    },
+    "packages/contracts": {
+      "name": "@nexathon/contracts",
+      "version": "0.1.0",
+    },
+    "packages/notifier": {
+      "name": "@nexathon/notifier",
+      "version": "0.1.0",
+    },
+  },
+  "packages": {
+    "@nexathon/contracts": ["@nexathon/contracts@workspace:packages/contracts"],
+
+    "@nexathon/controller": ["@nexathon/controller@workspace:apps/controller"],
+
+    "@nexathon/dashboard": ["@nexathon/dashboard@workspace:apps/dashboard"],
+
+    "@nexathon/notifier": ["@nexathon/notifier@workspace:packages/notifier"],
+
+    "@nexathon/sample": ["@nexathon/sample@workspace:apps/sample"],
+  }
+}

@@ -18,6 +18,21 @@ The local dashboard shows the evidence, decision, status, rollback or PR, and a 
 - **Scope:** One explicitly configured Vercel project and this GitHub repository. No general-purpose production access, database rollback, automatic PR merge, or broad multi-tenant platform.
 - **Agent:** Supercharge CLI runs headlessly *inside E2B*. Its provider/model must be configured with a **dedicated, spend-limited key** for the sandbox; do not copy anyone's personal `~/.supercharge/config.toml` into a repository or sandbox.
 
+## Technology stack (team-wide decision)
+
+- **Bun 1.x everywhere we control:** Bun is the TypeScript runtime, package manager, lockfile (`bun.lock`), script runner, and test runner. Use `bun install`, `bun run ...`, and `bun test`—do not add npm/pnpm/Yarn lockfiles. The root workspace currently pins `bun@1.3.11` for local consistency.
+- **Target deployment:** Vercel with a Bun function runtime configured by `apps/sample/vercel.json` (`bunVersion: "1.x"`; Vercel manages the minor/patch version). The sample app is a separate Vercel project. Bun is supported on all plans, but the Vercel function runtime is Beta.
+- **Controller:** Bun + TypeScript, local `bun:sqlite`, Vercel CLI/API, and a localhost HTTP API.
+- **Remediator:** Bun + TypeScript controller package, E2B JavaScript SDK, Supercharge CLI inside E2B, read-only GitHub MCP for diagnosis; GitHub CLI on the controller for branch/draft PR.
+- **Dashboard and alerts:** Lightweight React/Vite UI served locally via Bun; Slack incoming webhook. Madvit can keep the UI minimal to reserve time for the PPT.
+
+### Start working now
+
+1. Install Bun 1.x and run `bun install` at the repository root.
+2. Create your own branch from updated `main`: `anish/remediator`, `ronit/controller`, or `madvit/dashboard-pitch`. If your branch already exists, merge/rebase the new scaffold instead of recreating it.
+3. Work in your assigned directories below. Each directory has a README, and implemented packages can add Bun scripts to their `package.json` as they land.
+4. Keep `.env` files local. Add only redacted `.env.example` templates, not tokens. The project folders are **scaffolds**, not running applications yet.
+
 ## Team ownership
 
 | Person | Primary ownership | Deliverable by hour 7 | Avoid editing |

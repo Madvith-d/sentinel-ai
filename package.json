@@ -1,0 +1,8 @@
+{
+  "name": "nexathon",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "bun@1.3.11",
+  "workspaces": ["apps/*", "packages/*"]
+}
