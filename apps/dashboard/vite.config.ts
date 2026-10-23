@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'CONTROLLER_');
-  const target = env.CONTROLLER_API_URL || 'http://127.0.0.1:3000';
+  const target = env.CONTROLLER_API_URL || 'http://127.0.0.1:8787';
   const url = new URL(target);
   if (!['http:', 'https:'].includes(url.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
     || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
@@ -11,6 +11,22 @@ export default defineConfig(({ mode }) => {
   }
   const proxy = {
     '^/api/incidents(?:/[^/?]+)?(?:\\?.*)?$': {
+      target, changeOrigin: false,
+      bypass(req: { method?: string }) {
+        if (req.method !== 'GET') return false;
+      },
+    },
+    // Read-only views of the agent feed. The run trigger is never proxied.
+    '^/api/settings(?:\\?.*)?$': { target, changeOrigin: false },
+    '^/api/github/(?:connect|callback|installed)(?:\\?.*)?$': { target, changeOrigin: false },
+    '^/api/vercel/connect(?:\\?.*)?$': { target, changeOrigin: false },
+    '^/api/watch(?:\\?.*)?$': {
+      target, changeOrigin: false,
+      bypass(req: { method?: string }) {
+        if (req.method !== 'GET') return false;
+      },
+    },
+    '^/api/agent/runs(?:/[a-z0-9-]+(?:/events)?)?(?:\\?.*)?$': {
       target, changeOrigin: false,
       bypass(req: { method?: string }) {
         if (req.method !== 'GET') return false;

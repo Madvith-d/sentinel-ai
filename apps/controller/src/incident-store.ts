@@ -32,6 +32,10 @@ export class IncidentStore {
         deployment_id TEXT PRIMARY KEY,
         attempted_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS integration_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
   }
 
@@ -101,6 +105,16 @@ export class IncidentStore {
       'INSERT OR IGNORE INTO rollback_attempts (deployment_id, attempted_at) VALUES (?, ?)',
     ).run(deploymentId, at);
     return result.changes === 1;
+  }
+
+  readSettings(): Record<string, string> {
+    const rows = this.database.query('SELECT key, value FROM integration_settings').all() as Array<{ key: string; value: string }>;
+    return Object.fromEntries(rows.map(row => [row.key, row.value]));
+  }
+
+  writeSettings(values: Record<string, string>): void {
+    const upsert = this.database.query('INSERT INTO integration_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+    for (const [key, value] of Object.entries(values)) upsert.run(key, value);
   }
 
   close(): void {

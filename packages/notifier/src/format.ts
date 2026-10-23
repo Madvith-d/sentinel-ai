@@ -29,13 +29,13 @@ export function safeLink(value?: string): string | undefined {
 
 export const statusLabels: Record<Incident['status'], string> = {
   detected: 'Detected', investigating: 'Investigating', rolling_back: 'Rolling back',
-  remediating: 'Preparing fix', recovered: 'Recovered', pr_opened: 'Draft PR opened', needs_human: 'Needs human',
+  remediating: 'Preparing fix', recovered: 'Recovered', pr_opened: 'PR opened', needs_human: 'Needs human',
 };
 export const kindLabels: Record<Incident['kind'], string> = {
   runtime_regression: 'Fresh runtime regression', persistent_defect: 'Persistent defect', build_failure: 'Failed build',
 };
 export const decisionLabels: Record<NonNullable<Incident['decision']>, string> = {
-  rollback: 'Rollback', fix_pr: 'Draft fix PR', escalate: 'Escalate to a human',
+  rollback: 'Rollback', fix_pr: 'Open fix PR', escalate: 'Escalate to a human',
 };
 export const rollbackCaveat = 'After a Vercel rollback, automatic production-domain assignment can be disabled until a human promotes a repaired deployment.';
 
@@ -64,7 +64,7 @@ export function formatIncidentReport(incident: Incident): IncidentReport {
   lines.push('Evidence:', ...(evidence.length ? evidence : ['No evidence recorded.']));
   if (incident.evidence.length > 4) lines.push(`${incident.evidence.length - 4} more evidence entries in the incident.`);
   if (incident.events.length) lines.push(`Latest event: ${redact([...incident.events].sort((a, b) => a.at.localeCompare(b.at)).at(-1)!.message, 350)}`);
-  if (incident.status === 'pr_opened') lines.push('Draft PR only. Recovery is not verified; no code is merged automatically.');
+  if (incident.status === 'pr_opened') lines.push('Pull request is open for review. No code is merged automatically.');
   if (incident.status === 'rolling_back') lines.push('Rollback is in progress; recovery is not yet verified.');
   if (incident.status === 'needs_human') lines.push('Human review required. No further automatic action should be assumed.');
   if (incident.decision === 'rollback') lines.push(rollbackCaveat);
@@ -74,6 +74,6 @@ export function formatIncidentReport(incident: Incident): IncidentReport {
   const blocks: IncidentReport['blocks'] = [
     { type: 'section', text: { type: 'plain_text', text: text.replace(/\nAction:.*$/, ''), emoji: false } },
   ];
-  if (action) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${escapeSlack(action)}|${incident.decision === 'fix_pr' ? 'Review draft PR' : 'View action'}>` } });
+  if (action) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${escapeSlack(action)}|${incident.decision === 'fix_pr' ? 'Review pull request' : 'View action'}>` } });
   return { text, blocks };
 }

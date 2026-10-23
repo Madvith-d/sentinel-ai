@@ -32,6 +32,7 @@ describe('decideIncident', () => {
     expect(decideIncident({ ...baseAssessment, projectId: 'other-project' }).action).toBe('escalate');
     expect(decideIncident({ ...baseAssessment, currentDeploymentIsProduction: false }).action).toBe('escalate');
     expect(decideIncident({ ...baseAssessment, previousProbe: 'unknown' }).action).toBe('escalate');
+    expect(decideIncident({ ...baseAssessment, previousProbe: 'unknown', previousProtected: true }).action).toBe('rollback');
     expect(decideIncident({ ...baseAssessment, previousProbePath: '/api/health' }).action).toBe('escalate');
     expect(decideIncident({ ...baseAssessment, evidenceConsistent: false }).action).toBe('escalate');
   });

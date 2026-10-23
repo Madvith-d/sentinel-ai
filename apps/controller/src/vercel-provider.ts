@@ -1,4 +1,4 @@
-import type { Deployment, DeploymentProvider, ProbeResponse } from './monitor';
+import type { Deployment, DeploymentProvider, DeploymentState, DeploymentStatus, ProbeResponse } from './monitor';
 
 const apiBase = 'https://api.vercel.com';
 
@@ -55,6 +55,24 @@ function mapDeployment(value: unknown, projectId: string): Deployment | undefine
     ? text(metadata.githubCommitSha) ?? text(metadata.gitlabCommitSha) ?? text(metadata.gitCommitSha)
     : undefined;
   return { id, immutableUrl, createdAt, ...(commitSha ? { commitSha } : {}) };
+}
+
+function mapDeploymentStatus(value: unknown, projectId: string): DeploymentStatus | undefined {
+  const item = object(value);
+  if (!item || item.projectId !== projectId || item.target !== 'production') return undefined;
+  const id = text(item.uid) ?? text(item.id);
+  const createdAt = isoDate(item.createdAt) ?? isoDate(item.created);
+  const state = text(item.readyState) ?? text(item.state);
+  if (!id || !createdAt || !state) return undefined;
+  const metadata = object(item.meta);
+  const commitSha = metadata
+    ? text(metadata.githubCommitSha) ?? text(metadata.gitlabCommitSha) ?? text(metadata.gitCommitSha)
+    : undefined;
+  const knownState: DeploymentState = ['QUEUED', 'BUILDING', 'READY', 'ERROR', 'CANCELED'].includes(state)
+    ? state as DeploymentState
+    : 'UNKNOWN';
+  const immutableUrl = deploymentUrl(item.url);
+  return { id, state: knownState, createdAt, ...(immutableUrl ? { immutableUrl } : {}), ...(commitSha ? { commitSha } : {}) };
 }
 
 export class VercelProvider implements DeploymentProvider {
@@ -115,20 +133,35 @@ export class VercelProvider implements DeploymentProvider {
   async getProductionDeployment(projectId: string): Promise<Deployment | null> {
     this.assertProject(projectId);
     const aliasesUrl = this.apiUrl('/v4/aliases', {
-      domain: this.productionDomain,
       projectId: this.options.projectId,
-      limit: '10',
+      limit: '100',
     });
     const aliasesResponse = await this.request(aliasesUrl);
     const body = object(await aliasesResponse.json());
     const aliases = Array.isArray(body?.aliases) ? body.aliases : [];
     const alias = aliases
       .map(object)
-      .find(item => item && item.alias === this.productionDomain && !item.deletedAt);
+      .find(item => item && item.alias === this.productionDomain
+        && item.projectId === this.options.projectId && !item.deletedAt);
     const deployment = object(alias?.deployment);
     const deploymentId = text(alias?.deploymentId) ?? text(deployment?.id);
     if (!deploymentId) return null;
     return this.getDeployment(deploymentId);
+  }
+
+  async getLatestDeploymentStatus(projectId: string): Promise<DeploymentStatus | null> {
+    this.assertProject(projectId);
+    const response = await this.request(this.apiUrl('/v6/deployments', {
+      projectId: this.options.projectId,
+      target: 'production',
+      limit: '20',
+    }));
+    const body = object(await response.json());
+    const deployments = Array.isArray(body?.deployments) ? body.deployments : [];
+    return deployments
+      .map(item => mapDeploymentStatus(item, this.options.projectId))
+      .filter((item): item is DeploymentStatus => Boolean(item))
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0] ?? null;
   }
 
   async getPreviousDeployment(projectId: string, deploymentId: string): Promise<Deployment | null> {
@@ -193,9 +226,13 @@ export class VercelProvider implements DeploymentProvider {
         signal: AbortSignal.timeout(this.timeoutMs),
         headers: { Accept: 'application/json' },
       });
+      const status = response.status;
+      // Deployment Protection answers 401/403 on private immutable URLs. That is
+      // not an application failure and must not open an incident or a fix PR.
+      const result = response.ok ? 'pass' : status === 401 || status === 403 ? 'unknown' : 'fail';
       return {
-        result: response.ok ? 'pass' : 'fail',
-        evidence: `HTTP ${response.status} from ${url.hostname}${url.pathname}`,
+        result,
+        evidence: `HTTP ${status} from ${url.hostname}${url.pathname}`,
       };
     } catch {
       throw new Error('Deployment probe failed or timed out.');

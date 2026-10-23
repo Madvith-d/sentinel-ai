@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "start": "bun src/server.ts",
+    "start:run": "bun src/start-run.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@nexathon/contracts": "workspace:*",
-    "@nexathon/notifier": "workspace:*"
+    "@nexathon/notifier": "workspace:*",
+    "@nexathon/remediator": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",

@@ -13,6 +13,11 @@ const previousDeployment = {
   url: 'demo-previous.vercel.app', createdAt: Date.parse('2026-10-23T11:00:00Z'),
   meta: { githubCommitSha: 'def5678' },
 };
+const failedDeployment = {
+  uid: 'dpl_failed', projectId, target: 'production', readyState: 'ERROR',
+  url: 'demo-failed.vercel.app', createdAt: Date.parse('2026-10-23T12:01:00Z'),
+  meta: { githubCommitSha: 'fedcba0' },
+};
 
 function mockProvider() {
   const calls: Array<{ url: URL; init: RequestInit }> = [];
@@ -22,10 +27,15 @@ function mockProvider() {
     if (url.hostname !== 'api.vercel.com') return new Response(null, { status: 200 });
 
     if (url.pathname === '/v4/aliases') {
-      return Response.json({ aliases: [{ alias: 'demo.example.com', deploymentId: 'dpl_current' }] });
+      if (url.searchParams.has('domain')) return Response.json({ aliases: [] });
+      return Response.json({ aliases: [
+        { alias: 'demo.example.com', deploymentId: 'dpl_current', projectId },
+        { alias: 'other.example.com', deploymentId: 'dpl_other', projectId },
+      ] });
     }
     if (url.pathname === '/v13/deployments/dpl_current') return Response.json(currentDeployment);
     if (url.pathname === '/v13/deployments/dpl_previous') return Response.json(previousDeployment);
+    if (url.pathname === '/v6/deployments') return Response.json({ deployments: [currentDeployment, previousDeployment] });
     if (url.pathname === '/v7/deployments') return Response.json({ deployments: [currentDeployment, previousDeployment] });
     if (url.pathname === '/v1/projects/prj_demo/rollback/dpl_previous') return Response.json({}, { status: 201 });
     return new Response(null, { status: 404 });
@@ -75,5 +85,39 @@ describe('VercelProvider', () => {
     await expect(provider.probeImmutableDeployment('https://127.0.0.1', '/api/tasks')).rejects.toThrow('Invalid immutable');
     await expect(provider.probeImmutableDeployment('https://demo-current.vercel.app', '//attacker.example'))
       .rejects.toThrow('Invalid immutable');
+  });
+
+  it('treats deployment-protection responses as unknown and probes the public production host', async () => {
+    const calls: Array<{ url: URL }> = [];
+    const fetchMock = (async (input: RequestInfo | URL) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      calls.push({ url });
+      if (url.hostname === 'demo-current.vercel.app') return new Response('protected', { status: 401 });
+      if (url.hostname === 'demo.example.com') return new Response('ok', { status: 200 });
+      return new Response(null, { status: 500 });
+    }) as typeof fetch;
+    const provider = new VercelProvider({
+      accessToken: token,
+      projectId,
+      productionDomain: 'demo.example.com',
+      fetch: fetchMock,
+    });
+
+    const protectedProbe = await provider.probeImmutableDeployment('https://demo-current.vercel.app', '/api/tasks');
+    expect(protectedProbe.result).toBe('unknown');
+    expect(protectedProbe.evidence).toContain('HTTP 401');
+
+    const production = await provider.probeProduction(projectId, '/api/tasks');
+    expect(production.result).toBe('pass');
+    expect(calls.map(call => call.url.hostname)).toEqual(['demo-current.vercel.app', 'demo.example.com']);
+  });
+
+  it('maps the newest production deployment status for build-failure detection', async () => {
+    const { provider, calls } = mockProvider();
+    const original = calls.length;
+    const status = await provider.getLatestDeploymentStatus(projectId);
+    expect(calls.length).toBe(original + 1);
+    expect(status?.id).toBe('dpl_current');
+    expect(status?.state).toBe('READY');
   });
 });
