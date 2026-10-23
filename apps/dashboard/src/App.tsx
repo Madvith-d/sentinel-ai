@@ -135,7 +135,56 @@ function LiveActivity({ incidentId }: { incidentId: string }) {
   </section>;
 }
 
-function Detail({ incident }: { incident: Incident }) {
+type WatchLog = {
+  id: string;
+  level: string;
+  message: string;
+  statusCode?: number;
+  timestamp: number;
+  isError: boolean;
+};
+
+function WatchTelemetry({ watch }: { watch: WatchState | null }) {
+  const probe = watch?.probe;
+  const logs = watch?.logs ?? [];
+  return <section className="panel telemetry-panel" aria-live="polite">
+    <div className="section-heading">
+      <h2>Production telemetry</h2>
+      <span>probe / 30s · logs / 60s</span>
+    </div>
+    <div className="telemetry-probe">
+      <div>
+        <span className="telemetry-label">Latest probe</span>
+        <strong className={`probe-result ${probe?.result ?? 'unknown'}`}>
+          {probe?.result === 'pass' ? 'Succeeded' : probe?.result === 'fail' ? 'Failed' : 'Waiting'}
+        </strong>
+      </div>
+      <div>
+        <span className="telemetry-label">Response</span>
+        <strong className="mono">{probe?.statusCode ? `HTTP ${probe.statusCode}` : '—'}</strong>
+      </div>
+      <div>
+        <span className="telemetry-label">Checked</span>
+        <strong>{probe ? formatTime(probe.checkedAt) : '—'}</strong>
+      </div>
+    </div>
+    {probe?.result === 'fail' && <p className="probe-error">{probe.evidence}</p>}
+    <div className="log-heading"><strong>Vercel runtime logs</strong><span>{watch?.logsCheckedAt ? `Updated ${formatTime(watch.logsCheckedAt)}` : 'Waiting for first log pull'}</span></div>
+    {watch?.logsError && <p className="telemetry-error" role="status">{watch.logsError}</p>}
+    {!watch && <p className="telemetry-empty">Live telemetry appears when the controller is running.</p>}
+    {watch && !watch.logsError && logs.length === 0 && <p className="telemetry-empty">No runtime logs returned for the current deployment.</p>}
+    {logs.length > 0 && <ol className="runtime-logs">
+      {logs.map(log => <li key={log.id} className={log.isError ? 'runtime-log-error' : ''}>
+        <time dateTime={new Date(log.timestamp).toISOString()}>{formatTime(new Date(log.timestamp).toISOString())}</time>
+        <span className="runtime-log-level">{log.level}</span>
+        {log.statusCode !== undefined && <span className="runtime-log-status">HTTP {log.statusCode}</span>}
+        <p>{log.message}</p>
+      </li>)}
+    </ol>}
+  </section>;
+}
+
+function Detail({ incident, watch }: { incident: Incident; watch: WatchState | null }) {
   const actionLabel = incident.decision === 'fix_pr' ? 'Open pull request' : incident.decision === 'rollback' ? 'View rollback target' : 'View action';
   const detected = incident.events.find(event => event.type === 'detected');
   const decision = incident.events.find(event => event.type === 'decision');
@@ -172,6 +221,7 @@ function Detail({ incident }: { incident: Incident }) {
       <li>{incident.status === 'pr_opened' ? 'Fix — a pull request is open for that bad commit.' : incident.status === 'needs_human' ? 'Fix — automatic work stopped and needs a person.' : 'Fix — the agent is working on the bad commit.'}</li>
     </ol>}
     {(incident.decision === 'rollback' || rolledBack(incident)) && <p className="caveat">{rollbackCaveat}</p>}
+    <WatchTelemetry watch={watch} />
     <LiveActivity incidentId={incident.id} />
     <div className="detail-columns"><Evidence incident={incident} /><Timeline events={incident.events} /></div>
   </main>;
@@ -185,6 +235,10 @@ type WatchState = {
   intervalMs: number;
   failures?: number;
   rollbackEnabled?: boolean;
+  probe: { checkedAt: string; result: 'pass' | 'fail' | 'unknown'; evidence: string; statusCode?: number } | null;
+  logs: WatchLog[];
+  logsCheckedAt: string | null;
+  logsError: string | null;
 };
 
 function checkLabel(watch: WatchState | null) {
@@ -280,7 +334,7 @@ function Dashboard() {
         {!snapshot.loading && !snapshot.error && snapshot.incidents.length === 0 && <p className="state-message">No incidents recorded yet.</p>}
         <nav className="incident-list" aria-label="Incidents">{snapshot.incidents.map(incident => <IncidentCard key={incident.id} incident={incident} selected={selected?.id === incident.id} onSelect={() => setSelectedId(incident.id)} />)}</nav>
       </aside>
-      {showSetup ? <Setup onClose={() => setShowSetup(false)} /> : selected ? <Detail incident={selected} /> : <main className="empty-detail"><span className="empty-icon">K</span><h1>No incident selected</h1><p>When the controller records an incident, its evidence and recovery path will appear here.</p></main>}
+      {showSetup ? <Setup onClose={() => setShowSetup(false)} /> : selected ? <Detail incident={selected} watch={watch} /> : <main className="empty-detail"><span className="empty-icon">K</span><h1>No incident selected</h1><p>When the controller records an incident, its evidence and recovery path will appear here.</p></main>}
     </div>
   </div>;
 }

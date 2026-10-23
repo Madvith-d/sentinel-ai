@@ -8,7 +8,7 @@ import { dispatchRun } from './remediation';
 import { startPollingWorker, type PollingWorker } from './worker';
 import { VercelProvider } from './vercel-provider';
 import { CoolifyProvider, RailwayProvider, RenderProvider } from './platform-providers';
-import type { DeploymentProvider } from './monitor';
+import type { DeploymentProvider, RuntimeLog } from './monitor';
 import { createControllerActions, type RemediationConfig } from './actions';
 import { applyStoredSettings, createSettingsApi } from './settings';
 import { disconnectFields, exchangeGithubManifest, githubConnectTarget, githubCredentials, githubStateOk, installationExists, listInstallationRepositories, matchingVercelProject, verifyGithubWebhook } from './github-app';
@@ -163,10 +163,16 @@ const watch = {
   rollbackEnabled: Boolean(monitorConfig?.rollbackEnabled),
   intervalMs: monitorConfig?.pollIntervalMs ?? 30_000,
   failures: 0,
+  probe: null as { checkedAt: string; result: 'pass' | 'fail' | 'unknown'; evidence: string; statusCode?: number } | null,
+  logs: [] as RuntimeLog[],
+  logsCheckedAt: null as string | null,
+  logsError: null as string | null,
 };
 
 let vercelDevice: { code: string; expiresAt: number } | undefined;
 let monitorWorker: PollingWorker | undefined;
+let logsTimer: ReturnType<typeof setInterval> | undefined;
+let logsRefreshing = false;
 
 function dashboardOrigin(): string {
   const configured = process.env.DASHBOARD_ORIGIN ?? 'http://127.0.0.1:5173';
@@ -193,6 +199,14 @@ function launchMonitor(config: MonitorConfig): void {
     deploymentStatusIntervalMs: config.deploymentStatusIntervalMs,
     onResult: (_, result) => {
       watch.checkedAt = new Date().toISOString();
+      if (result.probe) {
+        watch.probe = {
+          checkedAt: watch.checkedAt,
+          result: result.probe.result,
+          evidence: result.probe.evidence,
+          ...(result.probe.statusCode !== undefined ? { statusCode: result.probe.statusCode } : {}),
+        };
+      }
       if (result.action === 'monitor') {
         watch.failures = result.consecutiveFailures;
         watch.outcome = result.consecutiveFailures > 0 ? 'failing' : 'healthy';
@@ -218,7 +232,34 @@ function launchMonitor(config: MonitorConfig): void {
       console.error('Controller monitor cycle failed.');
     },
   });
+  if (config.provider.getRuntimeLogs) {
+    const refreshLogs = async () => {
+      if (logsRefreshing) return;
+      logsRefreshing = true;
+      try {
+        const current = await config.provider.getProductionDeployment(config.projectId);
+        if (!current) throw new Error('No current production deployment is available.');
+        watch.logs = await config.provider.getRuntimeLogs!(config.projectId, current.id);
+        watch.logsCheckedAt = new Date().toISOString();
+        watch.logsError = null;
+      } catch (error) {
+        watch.logsCheckedAt = new Date().toISOString();
+        watch.logsError = error instanceof Error ? error.message : 'Runtime logs could not be retrieved.';
+      } finally {
+        logsRefreshing = false;
+      }
+    };
+    void refreshLogs();
+    logsTimer = setInterval(() => { void refreshLogs(); }, 60_000);
+  }
   console.info(`Monitoring enabled for configured ${config.platform} service ${config.projectId}; rollback ${config.rollbackEnabled ? 'enabled' : 'disabled'}.`);
+}
+
+async function stopMonitor(): Promise<void> {
+  if (logsTimer) clearInterval(logsTimer);
+  logsTimer = undefined;
+  await monitorWorker?.stop();
+  monitorWorker = undefined;
 }
 
 async function integrationRoutes(request: Request, settingsStore: typeof store): Promise<Response | null> {
@@ -311,8 +352,7 @@ async function integrationRoutes(request: Request, settingsStore: typeof store):
     await settingsStore.deleteSettings(keys);
     for (const key of keys) delete process.env[key];
     if (provider === 'vercel') {
-      await monitorWorker?.stop();
-      monitorWorker = undefined;
+      await stopMonitor();
       process.env.CONTROLLER_MONITOR_ENABLED = 'false';
       await settingsStore.writeSettings({ CONTROLLER_MONITOR_ENABLED: 'false' });
     }
@@ -393,7 +433,7 @@ let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  await monitorWorker?.stop();
+  await stopMonitor();
   server.stop();
   await store.close();
 }
