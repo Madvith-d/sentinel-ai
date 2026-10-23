@@ -1,6 +1,7 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'bun:test';
-import { appJwt, githubConnectPage } from '../src/github-app';
+import { createHmac } from 'node:crypto';
+import { appJwt, githubConnectPage, verifyGithubWebhook } from '../src/github-app';
 
 describe('github app connect', () => {
   it('builds a manifest that asks for repo and pull request access', () => {
@@ -9,6 +10,21 @@ describe('github app connect', () => {
     expect(page).toContain('http://127.0.0.1:8899/api/github/callback');
     expect(page).toContain('pull_requests');
     expect(page).not.toContain('ghp_');
+    expect(page).not.toContain('hook_attributes');
+  });
+
+  it('points an https app at the webhook', () => {
+    const page = githubConnectPage('https://sentinel.example');
+    expect(page).toContain('https://sentinel.example/api/github/webhook');
+    expect(page).toContain('sentinel-ai-bot');
+  });
+
+  it('checks the GitHub webhook signature', () => {
+    const body = '{"zen":"ok"}';
+    const secret = 'test-secret';
+    const signature = `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
+    expect(verifyGithubWebhook(body, signature, secret)).toBe(true);
+    expect(verifyGithubWebhook(body, signature, 'other')).toBe(false);
   });
 
   it('signs an app JWT with the app id as issuer', () => {

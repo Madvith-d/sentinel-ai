@@ -1,4 +1,4 @@
-import { createSign, randomBytes } from 'node:crypto';
+import { createHmac, createSign, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncidentStore } from './incident-store';
 
 const state = randomBytes(16).toString('hex');
@@ -6,15 +6,16 @@ const state = randomBytes(16).toString('hex');
 export function githubConnectPage(origin: string, owner?: string): string {
   const redirect = `${origin}/api/github/callback`;
   const manifest = {
-    name: 'Sentinel',
+    name: 'sentinel-ai-bot',
     url: origin,
     redirect_url: redirect,
     callback_urls: [redirect],
     setup_url: `${origin}/api/github/installed`,
     public: false,
     default_permissions: { contents: 'write', pull_requests: 'write', metadata: 'read' },
-    default_events: [],
+    default_events: origin.startsWith('https://') ? ['push', 'pull_request'] : [],
     request_oauth_on_install: false,
+    ...(origin.startsWith('https://') ? { hook_attributes: { url: `${origin}/api/github/webhook`, active: true } } : {}),
   };
   const target = owner
     ? `https://github.com/organizations/${encodeURIComponent(owner)}/settings/apps/new`
@@ -37,14 +38,24 @@ export async function exchangeGithubManifest(code: string): Promise<Record<strin
     headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'sentinel' },
   });
   if (!response.ok) throw new Error('GitHub did not finish creating the app.');
-  const body = await response.json() as { id?: number; pem?: string; slug?: string; client_id?: string };
+  const body = await response.json() as { id?: number; pem?: string; slug?: string; client_id?: string; webhook_secret?: string };
   if (!body.id || !body.pem || !body.slug) throw new Error('GitHub app details were incomplete.');
   return {
     GITHUB_APP_ID: String(body.id),
     GITHUB_APP_PEM: body.pem,
     GITHUB_APP_SLUG: body.slug,
     ...(body.client_id ? { GITHUB_CLIENT_ID: body.client_id } : {}),
+    ...(body.webhook_secret ? { GITHUB_WEBHOOK_SECRET: body.webhook_secret } : {}),
   };
+}
+
+export function verifyGithubWebhook(body: string, signature: string | null, secret: string): boolean {
+  if (!signature?.startsWith('sha256=') || !secret) return false;
+  const expected = createHmac('sha256', secret).update(body).digest('hex');
+  const received = signature.slice('sha256='.length);
+  const left = Buffer.from(received);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 export function appJwt(appId: string, pem: string, now = Date.now()): string {

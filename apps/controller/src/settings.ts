@@ -36,6 +36,7 @@ export const settingFields: SettingField[] = [
   { group: 'GitHub', key: 'GITHUB_APP_SLUG', label: 'App slug', secret: false },
   { group: 'GitHub', key: 'GITHUB_INSTALLATION_ID', label: 'Installation id', secret: false },
   { group: 'GitHub', key: 'GITHUB_APP_PEM', label: 'App private key', secret: true },
+  { group: 'GitHub', key: 'GITHUB_WEBHOOK_SECRET', label: 'Webhook secret', secret: true },
   { group: 'GitHub', key: 'GH_TOKEN', label: 'Personal token fallback for pull requests', secret: true },
   { group: 'GitHub', key: 'GITHUB_READ_TOKEN', label: 'Personal read-token fallback', secret: true },
   { group: 'GitHub', key: 'REMEDIATOR_REPOSITORY', label: 'Repository (owner/name)', secret: false },

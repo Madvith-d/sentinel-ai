@@ -11,7 +11,7 @@ import { CoolifyProvider, RailwayProvider, RenderProvider } from './platform-pro
 import type { DeploymentProvider } from './monitor';
 import { createControllerActions, type RemediationConfig } from './actions';
 import { applyStoredSettings, createSettingsApi } from './settings';
-import { exchangeGithubManifest, githubConnectPage, githubCredentials, githubStateOk } from './github-app';
+import { exchangeGithubManifest, githubConnectPage, githubCredentials, githubStateOk, verifyGithubWebhook } from './github-app';
 import { pollVercelDevice, startVercelDevice } from './vercel-login';
 import { DashboardAuth } from './auth';
 
@@ -21,7 +21,18 @@ const store = new IncidentStore(databaseUrl);
 await store.ready;
 await applyStoredSettings(store);
 
-const host = '127.0.0.1';
+function publicOrigin(): string {
+  const configured = process.env.CONTROLLER_PUBLIC_ORIGIN?.trim().replace(/\/$/, '');
+  if (!configured) return `http://${host}:${port}`;
+  const url = new URL(configured);
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+    throw new Error('CONTROLLER_PUBLIC_ORIGIN must be an http(s) origin without credentials.');
+  }
+  return url.origin;
+}
+
+const host = process.env.CONTROLLER_HOST ?? '127.0.0.1';
+if (host !== '127.0.0.1' && host !== '0.0.0.0') throw new Error('CONTROLLER_HOST must be 127.0.0.1 or 0.0.0.0.');
 const port = Number(process.env.CONTROLLER_PORT ?? 8787);
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error('CONTROLLER_PORT must be a valid TCP port.');
@@ -151,9 +162,18 @@ let vercelDevice: { code: string; expiresAt: number } | undefined;
 async function integrationRoutes(request: Request, settingsStore: typeof store): Promise<Response | null> {
   const url = new URL(request.url);
   const dashboard = 'http://127.0.0.1:5173/';
+  if (url.pathname === '/api/github/webhook' && request.method === 'POST') {
+    const body = await request.text();
+    const secret = process.env.GITHUB_WEBHOOK_SECRET ?? '';
+    if (!secret) return Response.json({ error: 'GitHub webhook secret is not configured.' }, { status: 503 });
+    if (!verifyGithubWebhook(body, request.headers.get('x-hub-signature-256'), secret)) {
+      return Response.json({ error: 'GitHub webhook signature did not match.' }, { status: 401 });
+    }
+    return new Response(null, { status: 204 });
+  }
   if (url.pathname === '/api/github/connect' && request.method === 'GET') {
     const owner = url.searchParams.get('owner')?.trim();
-    return new Response(githubConnectPage(`http://${host}:${port}`, owner || undefined), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+    return new Response(githubConnectPage(publicOrigin(), owner || undefined), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
   }
   if (url.pathname === '/api/github/callback' && request.method === 'GET') {
     const returnedState = url.searchParams.get('state');
