@@ -27,6 +27,18 @@ E2B_REMEDIATOR_TEMPLATE=iotserver24/zns-bench-2cpu-4gb \
 
 The last two commands create a short-lived **real E2B sandbox** and require `E2B_API_KEY`. The extended smoke test clones the exact pushed SHA, installs only the sample workspace, runs sample tests/build, verifies the Next build output, and checks that published Supercharge parses its GitHub MCP configuration with a **dummy** token. A separate remediator-only smoke is available by omitting `SMOKE_INSTALL_TARGET=sample`. It does not authenticate to GitHub MCP, call a model, or open a PR. A full fix run also needs a sample app, a failing test, a dedicated provider key, and a read-only GitHub MCP credential.
 
+## Deterministic fix-path rehearsal (no model key needed)
+
+After the sample app has been merged, the following command clones that exact revision in a 4 GiB E2B sandbox, uploads a **temporary** regression test for task filtering, proves it fails, applies a test-only deterministic repair, and verifies the targeted test, all sample tests, Next build, and the safe patch boundary:
+
+```sh
+E2B_REMEDIATOR_TEMPLATE=iotserver24/zns-bench-2cpu-4gb \
+  SMOKE_CLONE_SHA=$(git rev-parse origin/main) \
+  bun run --cwd packages/remediator smoke:fixture
+```
+
+The source fixture is `fixtures/task-filter.repro.ts.txt`; it is copied only into the ephemeral sandbox. This rehearsal makes **no GitHub branch/PR, production change, model call, or persistent sample-app edit**. It tests the fix pipeline mechanics, **not** Supercharge's ability to produce a fix. The full AI path still needs dedicated credentials, a real controller dispatch, and an incident-specific regression test.
+
 ## Controller integration
 
 Ronit should add `"@nexathon/remediator": "workspace:*"` to `apps/controller/package.json` and run `bun install` at the root before importing this package. The controller owns the incident-to-request mapping and keeps its GitHub write token locally.
