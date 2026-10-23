@@ -19,10 +19,11 @@ bun install
 bun run --cwd packages/remediator typecheck
 bun test --cwd packages/remediator
 bun run --cwd packages/remediator smoke:e2b
-SMOKE_INSTALL_BUN=1 SMOKE_INSTALL_SUPERCHARGE=1 bun run --cwd packages/remediator smoke:e2b
+SMOKE_INSTALL_BUN=1 SMOKE_INSTALL_SUPERCHARGE=1 SMOKE_MCP_CONFIG=1 \
+  SMOKE_CLONE_SHA=$(git rev-parse HEAD) bun run --cwd packages/remediator smoke:e2b
 ```
 
-The last two commands create a short-lived **real E2B sandbox** and require `E2B_API_KEY`. The smoke test does not call a model or open a PR. A full fix run also needs a sample app, a failing test, a dedicated provider key, and a read-only GitHub MCP credential.
+The last two commands create a short-lived **real E2B sandbox** and require `E2B_API_KEY`. The extended smoke test clones the exact pushed SHA, installs the whole Bun workspace, runs remediator typecheck/tests, and checks that published Supercharge parses its GitHub MCP configuration with a **dummy** token. It does not authenticate to GitHub MCP, call a model, or open a PR. A full fix run also needs a sample app, a failing test, a dedicated provider key, and a read-only GitHub MCP credential.
 
 ## Controller integration
 
