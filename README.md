@@ -33,6 +33,27 @@ The local dashboard shows the evidence, decision, status, rollback or PR, and a 
 3. Work in your assigned directories below. Each directory has a README, and implemented packages can add Bun scripts to their `package.json` as they land.
 4. Keep `.env` files local. Add only redacted `.env.example` templates, not tokens. The project folders are **scaffolds**, not running applications yet.
 
+## Folder structure (already created on `main`)
+
+```text
+nexathon/
+├── apps/
+│   ├── sample/              # Ronit: Vercel target app, api/, tests/, vercel.json
+│   ├── controller/          # Ronit: Bun worker, SQLite, decision engine, local API
+│   └── dashboard/           # Madvit: local incident UI, screenshots for PPT
+├── packages/
+│   ├── contracts/           # Ronit: incident types and shared fixtures
+│   ├── notifier/            # Madvit: Slack formatting/sending
+│   └── remediator/          # Anish: E2B + Supercharge + GitHub MCP + PR handoff
+├── docs/
+│   └── slides/              # Madvit: pitch deck/diagrams; docs/demo.md later
+├── package.json             # Bun workspace definitions
+├── bun.lock                 # The only package-manager lockfile
+└── README.md                # Team plan, hourly assignments, acceptance tests
+```
+
+The `src/`, `api/`, `tests/`, and `public/` directories are also tracked with placeholders so everyone can pull and begin in their assigned folder immediately. **Do not create a second root project or a second lockfile.**
+
 ## Team ownership
 
 | Person | Primary ownership | Deliverable by hour 7 | Avoid editing |
