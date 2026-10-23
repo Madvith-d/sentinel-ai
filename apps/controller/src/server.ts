@@ -8,6 +8,11 @@ import { dispatchRun } from './remediation';
 import { startPollingWorker, type PollingWorker } from './worker';
 import { VercelProvider } from './vercel-provider';
 import { createControllerActions, type RemediationConfig } from './actions';
+import { applyStoredSettings, createSettingsApi } from './settings';
+
+const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const databasePath = resolve(packageDirectory, process.env.INCIDENT_DB_PATH ?? './data/incidents.sqlite');
+applyStoredSettings(databasePath);
 
 const host = '127.0.0.1';
 const port = Number(process.env.CONTROLLER_PORT ?? 8787);
@@ -71,8 +76,6 @@ if (monitorFlag === 'true') {
   };
 }
 
-const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const databasePath = resolve(packageDirectory, process.env.INCIDENT_DB_PATH ?? './data/incidents.sqlite');
 const store = new IncidentStore(databasePath);
 let remediation: RemediationConfig | undefined;
 if (remediationFlag === 'true') {
@@ -102,6 +105,7 @@ if (remediationFlag === 'true') {
 const hub = new ActivityHub();
 const actions = createControllerActions({ slackWebhookUrl: process.env.SLACK_WEBHOOK_URL, remediation }, hub);
 const incidentApi = createIncidentApi(store);
+const settingsApi = createSettingsApi(store);
 const activityApi = createActivityApi({
   hub,
   lookupIncident: id => store.get(id),
@@ -123,6 +127,8 @@ const server = Bun.serve({
   port,
   fetch: async (request, bunServer) => {
     const url = new URL(request.url);
+    const settingsResponse = await settingsApi(request);
+    if (settingsResponse) return settingsResponse;
     if (url.pathname === '/api/watch') {
       if (request.method !== 'GET') return Response.json({ error: 'Method not allowed.' }, { status: 405 });
       return Response.json({ ...watch, now: new Date().toISOString() });

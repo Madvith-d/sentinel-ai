@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Setup } from './Setup';
 import {
   decisionLabels,
   kindLabels,
@@ -180,6 +181,7 @@ function LiveWatch() {
 }
 
 export default function App() {
+  const [showSetup, setShowSetup] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const snapshot = useIncidents(mode, selectedId, refresh);
@@ -187,7 +189,7 @@ export default function App() {
   const counts = useMemo(() => ({ active: snapshot.incidents.filter(item => !['recovered', 'needs_human', 'pr_opened'].includes(item.status)).length, recovered: snapshot.incidents.filter(item => item.status === 'recovered').length }), [snapshot.incidents]);
 
   return <div className="app-shell">
-    <header className="topbar"><div className="brand"><span className="brand-mark" aria-hidden="true">✳</span><span>Keel <em>deploy watch</em></span></div><div className="topbar-meta"><LiveWatch /><span className={`mode-dot ${mode}`} />{mode === 'fixtures' ? 'Rehearsal data' : 'Live controller'}<button className="refresh" onClick={() => setRefresh(value => value + 1)} type="button">Refresh</button></div></header>
+    <header className="topbar"><div className="brand"><span className="brand-mark" aria-hidden="true">✳</span><span>Keel <em>deploy watch</em></span></div><div className="topbar-meta"><LiveWatch /><span className={`mode-dot ${mode}`} />{mode === 'fixtures' ? 'Rehearsal data' : 'Live controller'}<button className="refresh" onClick={() => setShowSetup(value => !value)} type="button">Setup</button><button className="refresh" onClick={() => setRefresh(value => value + 1)} type="button">Refresh</button></div></header>
     <div className="workspace">
       <aside className="sidebar"><div className="sidebar-heading"><div><p className="eyebrow">Operations</p><h2>Incidents</h2></div><span className="count">{snapshot.incidents.length}</span></div><div className="sidebar-stats"><span><strong>{counts.active}</strong> active</span><span><strong>{counts.recovered}</strong> recovered</span></div>
         {snapshot.loading && <p className="state-message">Loading incident evidence…</p>}
@@ -195,7 +197,7 @@ export default function App() {
         {!snapshot.loading && !snapshot.error && snapshot.incidents.length === 0 && <p className="state-message">No incidents recorded yet.</p>}
         <nav className="incident-list" aria-label="Incidents">{snapshot.incidents.map(incident => <IncidentCard key={incident.id} incident={incident} selected={selected?.id === incident.id} onSelect={() => setSelectedId(incident.id)} />)}</nav>
       </aside>
-      {selected ? <Detail incident={selected} /> : <main className="empty-detail"><span className="empty-icon">✳</span><h1>No incident selected</h1><p>When the controller records an incident, its evidence and recovery path will appear here.</p></main>}
+      {showSetup ? <Setup onClose={() => setShowSetup(false)} /> : selected ? <Detail incident={selected} /> : <main className="empty-detail"><span className="empty-icon">✳</span><h1>No incident selected</h1><p>When the controller records an incident, its evidence and recovery path will appear here.</p></main>}
     </div>
   </div>;
 }
