@@ -33,6 +33,10 @@ export interface DeploymentProvider {
   probeImmutableDeployment(deploymentUrl: string, probePath: string): Promise<ProbeResponse>;
   rollbackProductionTo(projectId: string, deploymentId: string): Promise<{ actionUrl?: string }>;
   probeProduction(projectId: string, probePath: string): Promise<ProbeResponse>;
+  /** Short, redacted-at-the-boundary diagnostic lines for an incident deployment. */
+  getDeploymentLogs?(projectId: string, deploymentId: string): Promise<string[]>;
+  /** Provider-owned host allowlist for deployment URLs returned by its API. */
+  isSafeDeploymentUrl?(url: string): boolean;
 }
 
 export interface RemediationOutcome {
@@ -73,14 +77,31 @@ function safeProbePath(path: string): boolean {
   return /^\/(?!\/)[A-Za-z0-9/_-]*$/.test(path) && !path.includes('..');
 }
 
-function safeImmutableUrl(value: string): string | undefined {
+function safeImmutableUrl(value: string, provider?: DeploymentProvider): string | undefined {
   try {
     const url = new URL(value);
-    if (url.protocol !== 'https:' || !url.hostname.endsWith('.vercel.app')
+    const host = url.hostname.toLowerCase();
+    const privateIpv4 = /^127\.|^10\.|^192\.168\.|^169\.254\.|^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
+    if (url.protocol !== 'https:' || !host || host === 'localhost' || host === '::1' || privateIpv4
       || url.username || url.password || url.search || url.hash) return undefined;
+    if (provider?.isSafeDeploymentUrl ? !provider.isSafeDeploymentUrl(url.href) : !host.endsWith('.vercel.app')) return undefined;
     return url.href;
   } catch {
     return undefined;
+  }
+}
+
+async function appendDeploymentLogs(incident: Incident, options: MonitorOptions, deploymentId: string): Promise<void> {
+  if (!options.provider.getDeploymentLogs) return;
+  try {
+    const lines = await options.provider.getDeploymentLogs(options.projectId, deploymentId);
+    const safeLines = lines
+      .map(line => evidence(line.replace(/\s+/g, ' ').trim()))
+      .filter(Boolean)
+      .slice(0, 8);
+    if (safeLines.length) incident.evidence.push(...safeLines.map(line => `Deployment log: ${line}`));
+  } catch {
+    incident.evidence.push('Deployment logs could not be retrieved; incident handling continued safely.');
   }
 }
 
@@ -168,6 +189,7 @@ function makeBuildFailureIncident(
     projectId: options.projectId,
     deploymentId: deployment.id,
     commitSha: deployment.commitSha,
+    deploymentUrl: deployment.immutableUrl ? safeImmutableUrl(deployment.immutableUrl, options.provider) : undefined,
     deploymentUrl: deployment.immutableUrl ? safeImmutableUrl(deployment.immutableUrl) : undefined,
     decision: 'fix_pr',
     evidence: [
@@ -203,8 +225,8 @@ function makeIncident(
     projectId: options.projectId,
     deploymentId: current.id,
     commitSha: current.commitSha,
-    deploymentUrl: safeImmutableUrl(current.immutableUrl),
-    previousDeploymentUrl: previous ? safeImmutableUrl(previous.immutableUrl) : undefined,
+    deploymentUrl: safeImmutableUrl(current.immutableUrl, options.provider),
+    previousDeploymentUrl: previous ? safeImmutableUrl(previous.immutableUrl, options.provider) : undefined,
     probePath: options.probePath,
     evidence: [
       `${consecutiveFailures} consecutive failures observed since ${firstFailureAt}.`,
@@ -236,6 +258,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
         const existing = options.store.get(id);
         if (existing) return { action: 'incident', incident: existing, duplicate: true };
         const incident = makeBuildFailureIncident(options, latest, now().toISOString());
+        await appendDeploymentLogs(incident, options, latest.id);
         options.store.save(incident);
         await finishRemediation(incident, options);
         return { action: 'incident', incident };
@@ -254,7 +277,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
   }
   if (!current) return { action: 'unavailable', reason: 'No current production deployment is available.' };
 
-  const currentUrl = safeImmutableUrl(current.immutableUrl);
+  const currentUrl = safeImmutableUrl(current.immutableUrl, options.provider);
   if (!currentUrl) return { action: 'unavailable', reason: 'Provider returned an invalid immutable deployment URL.' };
 
   let currentProbe: ProbeResult = 'unknown';
@@ -338,7 +361,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
   try {
     previous = await options.provider.getPreviousDeployment(options.projectId, current.id);
     if (previous) {
-      const previousUrl = safeImmutableUrl(previous.immutableUrl);
+      const previousUrl = safeImmutableUrl(previous.immutableUrl, options.provider);
       if (previousUrl) {
         const result = await options.provider.probeImmutableDeployment(previousUrl, probePath);
         previousProbe = result.result;
@@ -402,6 +425,8 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
     decision,
     now().toISOString(),
   );
+
+  await appendDeploymentLogs(incident, options, current.id);
 
   if (decision.action !== 'rollback') {
     await finishRemediation(incident, options);

@@ -69,6 +69,7 @@ export function Setup({ onClose }: { onClose: () => void }) {
 
   return <main className="detail setup">
     <div className="section-heading"><div><p className="eyebrow">Setup</p><h1>Integrations</h1></div><button className="refresh" type="button" onClick={onClose}>Back to incidents</button></div>
+    <p className="setup-note">Connect GitHub and Vercel in the browser. Railway, Render, and Coolify use scoped API tokens below. Select the active platform, provide its public production URL and service/application ID, then restart Keel. Deployment logs are attached to incident evidence and rollback remains opt-in.</p>
     <p className="setup-note">Connect GitHub and Vercel in the browser. Keel stores the app and the Vercel session in the controller database. Personal tokens below are only a fallback. Restart Keel after connecting.</p>
     <section className="setup-group"><h2>Connect</h2>
       <p><a className="action" href="/api/github/connect">Connect GitHub</a> creates a private Keel GitHub App and installs it on the repo. Pull requests use a short-lived installation token. The sandbox gets a read-only token from the same app.</p>

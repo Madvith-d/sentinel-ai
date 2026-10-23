@@ -12,6 +12,7 @@ export interface SettingField {
 }
 
 export const settingFields: SettingField[] = [
+  { group: 'Platform', key: 'CONTROLLER_PLATFORM', label: 'Platform (vercel, railway, render, coolify)', secret: false },
   { group: 'Vercel', key: 'VERCEL_ACCESS_TOKEN', label: 'Access token (filled by Connect Vercel)', secret: true },
   { group: 'Vercel', key: 'VERCEL_REFRESH_TOKEN', label: 'Refresh token', secret: true },
   { group: 'Vercel', key: 'VERCEL_TEAM_ID', label: 'Team id', secret: false },
@@ -21,6 +22,19 @@ export const settingFields: SettingField[] = [
   { group: 'Vercel', key: 'CONTROLLER_PROBE_PATH', label: 'Probe path', secret: false },
   { group: 'Vercel', key: 'CONTROLLER_MONITOR_ENABLED', label: 'Monitoring (true/false)', secret: false },
   { group: 'Vercel', key: 'CONTROLLER_ROLLBACK_ENABLED', label: 'Rollback (true/false)', secret: false },
+  { group: 'Railway', key: 'RAILWAY_TOKEN', label: 'API token', secret: true },
+  { group: 'Railway', key: 'RAILWAY_PROJECT_ID', label: 'Project id', secret: false },
+  { group: 'Railway', key: 'RAILWAY_SERVICE_ID', label: 'Service id', secret: false },
+  { group: 'Railway', key: 'RAILWAY_ENVIRONMENT_ID', label: 'Environment id (optional)', secret: false },
+  { group: 'Railway', key: 'RAILWAY_PRODUCTION_URL', label: 'Public production URL', secret: false },
+  { group: 'Render', key: 'RENDER_API_KEY', label: 'API key', secret: true },
+  { group: 'Render', key: 'RENDER_OWNER_ID', label: 'Workspace owner id', secret: false },
+  { group: 'Render', key: 'RENDER_SERVICE_ID', label: 'Service id', secret: false },
+  { group: 'Render', key: 'RENDER_PRODUCTION_URL', label: 'Public production URL', secret: false },
+  { group: 'Coolify', key: 'COOLIFY_API_TOKEN', label: 'API token', secret: true },
+  { group: 'Coolify', key: 'COOLIFY_BASE_URL', label: 'Coolify base URL', secret: false },
+  { group: 'Coolify', key: 'COOLIFY_APPLICATION_ID', label: 'Application UUID', secret: false },
+  { group: 'Coolify', key: 'COOLIFY_PRODUCTION_URL', label: 'Public production URL', secret: false },
   { group: 'GitHub', key: 'GITHUB_APP_ID', label: 'App id (filled by Connect GitHub)', secret: false },
   { group: 'GitHub', key: 'GITHUB_APP_SLUG', label: 'App slug', secret: false },
   { group: 'GitHub', key: 'GITHUB_INSTALLATION_ID', label: 'Installation id', secret: false },
@@ -100,6 +114,9 @@ export function createSettingsApi(store: Pick<IncidentStore, 'readSettings' | 'w
     }
     if (next.REMEDIATOR_REPOSITORY) next.REMEDIATOR_ALLOWED_REPOSITORY = next.REMEDIATOR_REPOSITORY;
     if (next.VERCEL_PROJECT_ID) next.CONTROLLER_ROLLBACK_PROJECT_ID = next.VERCEL_PROJECT_ID;
+    if (next.RAILWAY_SERVICE_ID) next.CONTROLLER_ROLLBACK_PROJECT_ID = next.RAILWAY_SERVICE_ID;
+    if (next.RENDER_SERVICE_ID) next.CONTROLLER_ROLLBACK_PROJECT_ID = next.RENDER_SERVICE_ID;
+    if (next.COOLIFY_APPLICATION_ID) next.CONTROLLER_ROLLBACK_PROJECT_ID = next.COOLIFY_APPLICATION_ID;
     store.writeSettings(next);
     return Response.json({ ok: true, saved: Object.keys(next), restartRequired: true });
   };

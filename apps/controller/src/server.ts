@@ -7,6 +7,8 @@ import { createActivityApi } from './activity-api';
 import { dispatchRun } from './remediation';
 import { startPollingWorker, type PollingWorker } from './worker';
 import { VercelProvider } from './vercel-provider';
+import { CoolifyProvider, RailwayProvider, RenderProvider } from './platform-providers';
+import type { DeploymentProvider } from './monitor';
 import { createControllerActions, type RemediationConfig } from './actions';
 import { applyStoredSettings, createSettingsApi } from './settings';
 import { exchangeGithubManifest, githubConnectPage, githubCredentials, githubStateOk } from './github-app';
@@ -40,19 +42,20 @@ let monitorConfig: {
   pollIntervalMs: number;
   deploymentStatusIntervalMs: number;
   provider: VercelProvider;
+  deploymentStatusIntervalMs: number;
+  provider: DeploymentProvider;
+  platform: string;
 } | undefined;
 
 if (monitorFlag === 'true') {
-  const projectId = process.env.VERCEL_PROJECT_ID;
-  const accessToken = process.env.VERCEL_ACCESS_TOKEN;
-  const productionDomain = process.env.VERCEL_PRODUCTION_DOMAIN;
-  if (!projectId || !accessToken || !productionDomain) {
-    throw new Error('Monitoring requires VERCEL_PROJECT_ID, VERCEL_ACCESS_TOKEN, and VERCEL_PRODUCTION_DOMAIN.');
-  }
+  const platform = (process.env.CONTROLLER_PLATFORM ?? 'vercel').toLowerCase();
+  if (!['vercel', 'railway', 'render', 'coolify'].includes(platform)) throw new Error('CONTROLLER_PLATFORM must be vercel, railway, render, or coolify.');
+  const projectId = platform === 'vercel' ? process.env.VERCEL_PROJECT_ID : platform === 'railway' ? process.env.RAILWAY_SERVICE_ID : platform === 'render' ? process.env.RENDER_SERVICE_ID : process.env.COOLIFY_APPLICATION_ID;
+  if (!projectId) throw new Error(`Monitoring requires a configured ${platform} service/application ID.`);
 
   const rollbackEnabled = rollbackFlag === 'true';
   if (rollbackEnabled && process.env.CONTROLLER_ROLLBACK_PROJECT_ID !== projectId) {
-    throw new Error('Rollback requires CONTROLLER_ROLLBACK_PROJECT_ID to exactly match VERCEL_PROJECT_ID.');
+    throw new Error('Rollback requires CONTROLLER_ROLLBACK_PROJECT_ID to exactly match the configured platform service/application ID.');
   }
   const pollIntervalMs = Number(process.env.CONTROLLER_POLL_INTERVAL_MS ?? 30_000);
   if (!Number.isInteger(pollIntervalMs) || pollIntervalMs < 1_000 || pollIntervalMs > 300_000) {
@@ -63,6 +66,26 @@ if (monitorFlag === 'true') {
     throw new Error('CONTROLLER_DEPLOYMENT_STATUS_INTERVAL_MS must be between 1000 and 600000.');
   }
 
+  const productionUrl = platform === 'vercel' ? process.env.VERCEL_PRODUCTION_DOMAIN : platform === 'railway' ? process.env.RAILWAY_PRODUCTION_URL : platform === 'render' ? process.env.RENDER_PRODUCTION_URL : process.env.COOLIFY_PRODUCTION_URL;
+  if (!productionUrl) throw new Error(`Monitoring requires a ${platform} public production URL.`);
+  let provider: DeploymentProvider;
+  if (platform === 'vercel') {
+    const token = process.env.VERCEL_ACCESS_TOKEN;
+    if (!token) throw new Error('Vercel monitoring requires VERCEL_ACCESS_TOKEN.');
+    provider = new VercelProvider({ accessToken: token, projectId, productionDomain: productionUrl, teamId: process.env.VERCEL_TEAM_ID });
+  } else if (platform === 'railway') {
+    const token = process.env.RAILWAY_TOKEN; const railwayProjectId = process.env.RAILWAY_PROJECT_ID;
+    if (!token || !railwayProjectId) throw new Error('Railway monitoring requires RAILWAY_TOKEN and RAILWAY_PROJECT_ID.');
+    provider = new RailwayProvider({ token, projectId: railwayProjectId, serviceId: projectId, environmentId: process.env.RAILWAY_ENVIRONMENT_ID, productionUrl });
+  } else if (platform === 'render') {
+    const token = process.env.RENDER_API_KEY; const ownerId = process.env.RENDER_OWNER_ID;
+    if (!token || !ownerId) throw new Error('Render monitoring requires RENDER_API_KEY and RENDER_OWNER_ID.');
+    provider = new RenderProvider({ accessToken: token, serviceId: projectId, ownerId, productionUrl });
+  } else {
+    const token = process.env.COOLIFY_API_TOKEN; const baseUrl = process.env.COOLIFY_BASE_URL;
+    if (!token || !baseUrl) throw new Error('Coolify monitoring requires COOLIFY_API_TOKEN and COOLIFY_BASE_URL.');
+    provider = new CoolifyProvider({ accessToken: token, applicationId: projectId, baseUrl, productionUrl });
+  }
   monitorConfig = {
     projectId,
     rollbackEnabled,
@@ -75,6 +98,9 @@ if (monitorFlag === 'true') {
       productionDomain,
       teamId: process.env.VERCEL_TEAM_ID,
     }),
+    deploymentStatusIntervalMs,
+    provider,
+    platform,
   };
 }
 
@@ -240,7 +266,7 @@ if (monitorConfig) {
       console.error('Controller monitor cycle failed.');
     },
   });
-  console.info(`Monitoring enabled for configured Vercel project ${config.projectId}; rollback ${config.rollbackEnabled ? 'enabled' : 'disabled'}.`);
+  console.info(`Monitoring enabled for configured ${config.platform} service ${config.projectId}; rollback ${config.rollbackEnabled ? 'enabled' : 'disabled'}.`);
 }
 
 let shuttingDown = false;
