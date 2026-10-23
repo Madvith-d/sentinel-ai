@@ -27,7 +27,11 @@ function mockProvider() {
     if (url.hostname !== 'api.vercel.com') return new Response(null, { status: 200 });
 
     if (url.pathname === '/v4/aliases') {
-      return Response.json({ aliases: [{ alias: 'demo.example.com', deploymentId: 'dpl_current' }] });
+      if (url.searchParams.has('domain')) return Response.json({ aliases: [] });
+      return Response.json({ aliases: [
+        { alias: 'demo.example.com', deploymentId: 'dpl_current', projectId },
+        { alias: 'other.example.com', deploymentId: 'dpl_other', projectId },
+      ] });
     }
     if (url.pathname === '/v13/deployments/dpl_current') return Response.json(currentDeployment);
     if (url.pathname === '/v13/deployments/dpl_previous') return Response.json(previousDeployment);

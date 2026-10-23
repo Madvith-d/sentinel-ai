@@ -133,16 +133,16 @@ export class VercelProvider implements DeploymentProvider {
   async getProductionDeployment(projectId: string): Promise<Deployment | null> {
     this.assertProject(projectId);
     const aliasesUrl = this.apiUrl('/v4/aliases', {
-      domain: this.productionDomain,
       projectId: this.options.projectId,
-      limit: '10',
+      limit: '100',
     });
     const aliasesResponse = await this.request(aliasesUrl);
     const body = object(await aliasesResponse.json());
     const aliases = Array.isArray(body?.aliases) ? body.aliases : [];
     const alias = aliases
       .map(object)
-      .find(item => item && item.alias === this.productionDomain && !item.deletedAt);
+      .find(item => item && item.alias === this.productionDomain
+        && item.projectId === this.options.projectId && !item.deletedAt);
     const deployment = object(alias?.deployment);
     const deploymentId = text(alias?.deploymentId) ?? text(deployment?.id);
     if (!deploymentId) return null;
