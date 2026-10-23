@@ -1,0 +1,208 @@
+import type { Deployment, DeploymentProvider, ProbeResponse } from './monitor';
+
+const apiBase = 'https://api.vercel.com';
+
+type JsonObject = Record<string, unknown>;
+
+export interface VercelProviderOptions {
+  accessToken: string;
+  projectId: string;
+  productionDomain: string;
+  teamId?: string;
+  fetch?: typeof globalThis.fetch;
+  timeoutMs?: number;
+}
+
+function object(value: unknown): JsonObject | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : undefined;
+}
+
+function text(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function deploymentUrl(value: unknown): string | undefined {
+  const raw = text(value);
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw.startsWith('https://') ? raw : `https://${raw}`);
+    if (url.protocol !== 'https:' || !url.hostname.endsWith('.vercel.app')
+      || url.username || url.password || url.port || url.search || url.hash) return undefined;
+    return url.href;
+  } catch {
+    return undefined;
+  }
+}
+
+function isoDate(value: unknown): string | undefined {
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+  const parsed = typeof value === 'number' || /^\d+$/.test(value)
+    ? new Date(Number(value))
+    : new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : undefined;
+}
+
+function mapDeployment(value: unknown, projectId: string): Deployment | undefined {
+  const item = object(value);
+  if (!item || item.projectId !== projectId || item.readyState !== 'READY' || item.target !== 'production') return undefined;
+  const id = text(item.uid) ?? text(item.id);
+  const immutableUrl = deploymentUrl(item.url);
+  const createdAt = isoDate(item.createdAt) ?? isoDate(item.created);
+  if (!id || !immutableUrl || !createdAt) return undefined;
+
+  const metadata = object(item.meta);
+  const commitSha = metadata
+    ? text(metadata.githubCommitSha) ?? text(metadata.gitlabCommitSha) ?? text(metadata.gitCommitSha)
+    : undefined;
+  return { id, immutableUrl, createdAt, ...(commitSha ? { commitSha } : {}) };
+}
+
+export class VercelProvider implements DeploymentProvider {
+  private readonly fetchImpl: typeof globalThis.fetch;
+  private readonly timeoutMs: number;
+  private readonly productionDomain: string;
+
+  constructor(private readonly options: VercelProviderOptions) {
+    if (!options.accessToken.trim()) throw new Error('Vercel access token is required.');
+    if (!options.projectId.trim()) throw new Error('Vercel project ID is required.');
+    const domain = options.productionDomain.trim().toLowerCase();
+    if (!domain || domain.includes('/') || domain.includes('@') || domain.includes(':')) {
+      throw new Error('A hostname-only production domain is required.');
+    }
+    this.productionDomain = domain;
+    this.fetchImpl = options.fetch ?? globalThis.fetch;
+    this.timeoutMs = Math.max(1_000, Math.min(options.timeoutMs ?? 8_000, 20_000));
+  }
+
+  private assertProject(projectId: string): void {
+    if (projectId !== this.options.projectId) throw new Error('Vercel provider is scoped to a different project.');
+  }
+
+  private apiUrl(path: string, query: Record<string, string | undefined> = {}): URL {
+    const url = new URL(path, apiBase);
+    if (this.options.teamId) query.teamId = this.options.teamId;
+    for (const [key, value] of Object.entries(query)) if (value) url.searchParams.set(key, value);
+    return url;
+  }
+
+  private async request(url: URL, init: RequestInit = {}): Promise<Response> {
+    try {
+      const response = await this.fetchImpl(url, {
+        ...init,
+        redirect: 'error',
+        signal: AbortSignal.timeout(this.timeoutMs),
+        headers: {
+          Authorization: `Bearer ${this.options.accessToken}`,
+          Accept: 'application/json',
+          ...init.headers,
+        },
+      });
+      if (!response.ok) throw new Error(`Vercel API request failed with HTTP ${response.status}.`);
+      return response;
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Vercel API request failed')) throw error;
+      throw new Error('Vercel API request failed or timed out.');
+    }
+  }
+
+  private async getDeployment(id: string): Promise<Deployment | null> {
+    const url = this.apiUrl(`/v13/deployments/${encodeURIComponent(id)}`);
+    const response = await this.request(url);
+    const deployment = mapDeployment(await response.json(), this.options.projectId);
+    return deployment ?? null;
+  }
+
+  async getProductionDeployment(projectId: string): Promise<Deployment | null> {
+    this.assertProject(projectId);
+    const aliasesUrl = this.apiUrl('/v4/aliases', {
+      domain: this.productionDomain,
+      projectId: this.options.projectId,
+      limit: '10',
+    });
+    const aliasesResponse = await this.request(aliasesUrl);
+    const body = object(await aliasesResponse.json());
+    const aliases = Array.isArray(body?.aliases) ? body.aliases : [];
+    const alias = aliases
+      .map(object)
+      .find(item => item && item.alias === this.productionDomain && !item.deletedAt);
+    const deployment = object(alias?.deployment);
+    const deploymentId = text(alias?.deploymentId) ?? text(deployment?.id);
+    if (!deploymentId) return null;
+    return this.getDeployment(deploymentId);
+  }
+
+  async getPreviousDeployment(projectId: string, deploymentId: string): Promise<Deployment | null> {
+    this.assertProject(projectId);
+    const current = await this.getDeployment(deploymentId);
+    if (!current) return null;
+
+    const deploymentsUrl = this.apiUrl('/v7/deployments', {
+      projectId: this.options.projectId,
+      target: 'production',
+      state: 'READY',
+      rollbackCandidate: 'true',
+      limit: '20',
+    });
+    const response = await this.request(deploymentsUrl);
+    const body = object(await response.json());
+    const items = Array.isArray(body?.deployments) ? body.deployments : [];
+    const currentCreatedAt = Date.parse(current.createdAt);
+    const candidates = items
+      .map(item => mapDeployment(item, this.options.projectId))
+      .filter((item): item is Deployment => Boolean(item)
+        && item!.id !== current.id
+        && Date.parse(item!.createdAt) < currentCreatedAt)
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    return candidates[0] ?? null;
+  }
+
+  async probeImmutableDeployment(deployment: string, probePath: string): Promise<ProbeResponse> {
+    const url = deploymentUrl(deployment);
+    if (!url || !safeProbePath(probePath)) throw new Error('Invalid immutable deployment probe target.');
+    return this.probe(new URL(probePath, url));
+  }
+
+  async rollbackProductionTo(projectId: string, deploymentId: string): Promise<{ actionUrl?: string }> {
+    this.assertProject(projectId);
+    if (!deploymentId.trim()) throw new Error('Rollback target deployment ID is required.');
+    const current = await this.getProductionDeployment(projectId);
+    if (!current) throw new Error('Current production deployment could not be confirmed.');
+    const previous = await this.getPreviousDeployment(projectId, current.id);
+    if (previous?.id !== deploymentId) throw new Error('Rollback target is not the confirmed immediate predecessor.');
+    const target = await this.getDeployment(deploymentId);
+    if (!target) throw new Error('Rollback target is not a ready production deployment in the configured project.');
+    const url = this.apiUrl(
+      `/v1/projects/${encodeURIComponent(this.options.projectId)}/rollback/${encodeURIComponent(deploymentId)}`,
+      { description: 'Autonomous incident remediation: verified current/predecessor probe regression' },
+    );
+    await this.request(url, { method: 'POST' });
+    return { actionUrl: target.immutableUrl };
+  }
+
+  async probeProduction(projectId: string, probePath: string): Promise<ProbeResponse> {
+    this.assertProject(projectId);
+    if (!safeProbePath(probePath)) throw new Error('Invalid production probe path.');
+    return this.probe(new URL(probePath, `https://${this.productionDomain}`));
+  }
+
+  private async probe(url: URL): Promise<ProbeResponse> {
+    try {
+      const response = await this.fetchImpl(url, {
+        method: 'GET',
+        redirect: 'error',
+        signal: AbortSignal.timeout(this.timeoutMs),
+        headers: { Accept: 'application/json' },
+      });
+      return {
+        result: response.ok ? 'pass' : 'fail',
+        evidence: `HTTP ${response.status} from ${url.hostname}${url.pathname}`,
+      };
+    } catch {
+      throw new Error('Deployment probe failed or timed out.');
+    }
+  }
+}
+
+function safeProbePath(path: string): boolean {
+  return /^\/(?!\/)[A-Za-z0-9/_-]*$/.test(path) && !path.includes('..');
+}
