@@ -1,0 +1,79 @@
+import { describe, expect, it } from 'bun:test';
+import { VercelProvider } from '../src/vercel-provider';
+
+const projectId = 'prj_demo';
+const token = 'test-vercel-token';
+const currentDeployment = {
+  uid: 'dpl_current', projectId, target: 'production', readyState: 'READY',
+  url: 'demo-current.vercel.app', createdAt: Date.parse('2026-10-23T12:00:00Z'),
+  meta: { githubCommitSha: 'abc1234' },
+};
+const previousDeployment = {
+  uid: 'dpl_previous', projectId, target: 'production', readyState: 'READY',
+  url: 'demo-previous.vercel.app', createdAt: Date.parse('2026-10-23T11:00:00Z'),
+  meta: { githubCommitSha: 'def5678' },
+};
+
+function mockProvider() {
+  const calls: Array<{ url: URL; init: RequestInit }> = [];
+  const fetchMock = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    calls.push({ url, init });
+    if (url.hostname !== 'api.vercel.com') return new Response(null, { status: 200 });
+
+    if (url.pathname === '/v4/aliases') {
+      return Response.json({ aliases: [{ alias: 'demo.example.com', deploymentId: 'dpl_current' }] });
+    }
+    if (url.pathname === '/v13/deployments/dpl_current') return Response.json(currentDeployment);
+    if (url.pathname === '/v13/deployments/dpl_previous') return Response.json(previousDeployment);
+    if (url.pathname === '/v7/deployments') return Response.json({ deployments: [currentDeployment, previousDeployment] });
+    if (url.pathname === '/v1/projects/prj_demo/rollback/dpl_previous') return Response.json({}, { status: 201 });
+    return new Response(null, { status: 404 });
+  }) as typeof fetch;
+  const provider = new VercelProvider({
+    accessToken: token,
+    projectId,
+    productionDomain: 'demo.example.com',
+    fetch: fetchMock,
+  });
+  return { provider, calls };
+}
+
+describe('VercelProvider', () => {
+  it('resolves the active alias and immediate older production candidate', async () => {
+    const { provider, calls } = mockProvider();
+    const current = await provider.getProductionDeployment(projectId);
+    expect(current?.id).toBe('dpl_current');
+    expect(current?.immutableUrl).toBe('https://demo-current.vercel.app/');
+
+    const previous = await provider.getPreviousDeployment(projectId, 'dpl_current');
+    expect(previous?.id).toBe('dpl_previous');
+    expect(calls.some(call => call.url.pathname === '/v7/deployments'
+      && call.url.searchParams.get('rollbackCandidate') === 'true')).toBe(true);
+  });
+
+  it('revalidates project and predecessor before issuing rollback', async () => {
+    const { provider, calls } = mockProvider();
+    await expect(provider.rollbackProductionTo('other-project', 'dpl_previous')).rejects.toThrow('different project');
+    await expect(provider.rollbackProductionTo(projectId, 'dpl_current')).rejects.toThrow('immediate predecessor');
+    expect(calls.some(call => call.init.method === 'POST')).toBe(false);
+
+    const rollback = await provider.rollbackProductionTo(projectId, 'dpl_previous');
+    expect(rollback.actionUrl).toBe('https://demo-previous.vercel.app/');
+    expect(calls.some(call => call.url.pathname === '/v1/projects/prj_demo/rollback/dpl_previous'
+      && call.init.method === 'POST')).toBe(true);
+  });
+
+  it('probes only verified immutable Vercel hosts and sends no token to app probes', async () => {
+    const { provider, calls } = mockProvider();
+    const result = await provider.probeImmutableDeployment('https://demo-current.vercel.app', '/api/tasks');
+    expect(result.result).toBe('pass');
+    expect(result.evidence).toContain('HTTP 200');
+    const probeCall = calls.find(call => call.url.hostname === 'demo-current.vercel.app');
+    expect(probeCall?.init.headers).toEqual({ Accept: 'application/json' });
+
+    await expect(provider.probeImmutableDeployment('https://127.0.0.1', '/api/tasks')).rejects.toThrow('Invalid immutable');
+    await expect(provider.probeImmutableDeployment('https://demo-current.vercel.app', '//attacker.example'))
+      .rejects.toThrow('Invalid immutable');
+  });
+});

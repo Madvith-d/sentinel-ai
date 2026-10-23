@@ -1,20 +1,5 @@
-// Ronit owns the shared package; this structural boundary mirrors README until it exports types.
-export interface Incident {
-  id: string;
-  kind: 'runtime_regression' | 'persistent_defect' | 'build_failure';
-  status: 'detected' | 'investigating' | 'rolling_back' | 'remediating' | 'recovered' | 'pr_opened' | 'needs_human';
-  detectedAt: string;
-  projectId: string;
-  deploymentId?: string;
-  deploymentUrl?: string;
-  commitSha?: string;
-  previousDeploymentUrl?: string;
-  probePath?: string;
-  evidence: string[];
-  decision?: 'rollback' | 'fix_pr' | 'escalate';
-  actionUrl?: string;
-  events: Array<{ at: string; type: string; message: string }>;
-}
+import type { Incident } from '@nexathon/contracts';
+export type { Incident } from '@nexathon/contracts';
 
 export function redact(value: string, maxLength = 600): string {
   const clean = value

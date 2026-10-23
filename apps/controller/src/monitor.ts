@@ -1,0 +1,312 @@
+import { createHash } from 'node:crypto';
+import type { Incident } from '@nexathon/contracts';
+import { redact, safeLink } from '@nexathon/notifier/format';
+import { decideIncident, type ProbeResult } from './decision';
+import type { IncidentStore } from './incident-store';
+
+export interface Deployment {
+  id: string;
+  immutableUrl: string;
+  createdAt: string;
+  commitSha?: string;
+}
+
+export interface ProbeResponse {
+  result: 'pass' | 'fail';
+  evidence: string;
+}
+
+export interface DeploymentProvider {
+  getProductionDeployment(projectId: string): Promise<Deployment | null>;
+  getPreviousDeployment(projectId: string, deploymentId: string): Promise<Deployment | null>;
+  probeImmutableDeployment(deploymentUrl: string, probePath: string): Promise<ProbeResponse>;
+  rollbackProductionTo(projectId: string, deploymentId: string): Promise<{ actionUrl?: string }>;
+  probeProduction(projectId: string, probePath: string): Promise<ProbeResponse>;
+}
+
+export interface MonitorOptions {
+  projectId: string;
+  allowlistedProjectIds: ReadonlySet<string>;
+  probePath: string;
+  provider: DeploymentProvider;
+  store: Pick<IncidentStore, 'recordProbe' | 'get' | 'save' | 'claimRollback'>;
+  recencyWindowMs?: number;
+  recoveryAttempts?: number;
+  recoveryDelayMs?: number;
+  now?: () => Date;
+  wait?: (milliseconds: number) => Promise<void>;
+}
+
+export type MonitorResult =
+  | { action: 'monitor'; consecutiveFailures: number; reason: string }
+  | { action: 'incident'; incident: Incident; duplicate?: boolean; updated?: boolean }
+  | { action: 'unavailable'; reason: string };
+
+const defaultWait = (milliseconds: number) => new Promise<void>(resolve => setTimeout(resolve, milliseconds));
+const maxEvidenceLength = 600;
+
+function safeProbePath(path: string): boolean {
+  return /^\/(?!\/)[A-Za-z0-9/_-]*$/.test(path) && !path.includes('..');
+}
+
+function safeImmutableUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || !url.hostname.endsWith('.vercel.app')
+      || url.username || url.password || url.search || url.hash) return undefined;
+    return url.href;
+  } catch {
+    return undefined;
+  }
+}
+
+function evidence(value: string): string {
+  return redact(value, maxEvidenceLength);
+}
+
+function incidentId(projectId: string, deploymentId: string, probePath: string): string {
+  const fingerprint = createHash('sha256').update(`${projectId}\0${deploymentId}\0${probePath}`).digest('hex').slice(0, 24);
+  return `inc-${fingerprint}`;
+}
+
+function event(at: string, type: string, message: string) {
+  return { at, type, message: evidence(message) };
+}
+
+function makeIncident(
+  options: MonitorOptions,
+  current: Deployment,
+  previous: Deployment | null,
+  currentEvidence: string,
+  previousProbe: ProbeResult,
+  previousEvidence: string,
+  consecutiveFailures: number,
+  firstFailureAt: string,
+  currentDeploymentIsProduction: boolean,
+  decision: ReturnType<typeof decideIncident>,
+  at: string,
+): Incident {
+  const kind = previousProbe === 'fail' ? 'persistent_defect' : 'runtime_regression';
+  const incident: Incident = {
+    id: incidentId(options.projectId, current.id, options.probePath),
+    kind,
+    status: decision.action === 'fix_pr' ? 'needs_human' : 'detected',
+    detectedAt: at,
+    projectId: options.projectId,
+    deploymentId: current.id,
+    commitSha: current.commitSha,
+    deploymentUrl: safeImmutableUrl(current.immutableUrl),
+    previousDeploymentUrl: previous ? safeImmutableUrl(previous.immutableUrl) : undefined,
+    probePath: options.probePath,
+    evidence: [
+      `${consecutiveFailures} consecutive failures observed since ${firstFailureAt}.`,
+      `Current deployment probe: ${currentEvidence}`,
+      ...(previous ? [`Immediate predecessor probe (${previousProbe}): ${previousEvidence}`] : ['Immediate predecessor is unavailable or could not be verified.']),
+      ...(decision.action === 'fix_pr' ? ['Remediation is not wired in this controller milestone; no PR was created.'] : []),
+      ...(!currentDeploymentIsProduction ? ['The affected deployment is no longer confirmed as production.'] : []),
+    ].map(evidence),
+    decision: decision.action === 'monitor' ? undefined : decision.action,
+    events: [
+      event(at, 'detected', `Incident detected after ${consecutiveFailures} consecutive failures of ${options.probePath}.`),
+      event(at, 'investigation', `Current and predecessor deployment evidence collected for ${options.probePath}.`),
+      event(at, 'decision', decision.reason),
+    ],
+  };
+  return incident;
+}
+
+export async function checkProject(options: MonitorOptions): Promise<MonitorResult> {
+  const now = options.now ?? (() => new Date());
+  const probePath = options.probePath;
+  if (!safeProbePath(probePath)) return { action: 'unavailable', reason: 'Probe path must be a local absolute route without query strings.' };
+
+  let current: Deployment | null;
+  try {
+    current = await options.provider.getProductionDeployment(options.projectId);
+  } catch {
+    return { action: 'unavailable', reason: 'Could not resolve the current production deployment.' };
+  }
+  if (!current) return { action: 'unavailable', reason: 'No current production deployment is available.' };
+
+  const currentUrl = safeImmutableUrl(current.immutableUrl);
+  if (!currentUrl) return { action: 'unavailable', reason: 'Provider returned an invalid immutable deployment URL.' };
+
+  let currentProbe: ProbeResult = 'unknown';
+  let currentEvidence = 'Probe did not return a result.';
+  try {
+    const result = await options.provider.probeImmutableDeployment(currentUrl, probePath);
+    currentProbe = result.result;
+    currentEvidence = evidence(result.evidence);
+  } catch {
+    currentEvidence = 'Probe request failed before a response was received.';
+  }
+
+  const observedAt = now().toISOString();
+  const streak = options.store.recordProbe(options.projectId, current.id, probePath, currentProbe, observedAt);
+  if (currentProbe !== 'fail') {
+    return {
+      action: 'monitor',
+      consecutiveFailures: 0,
+      reason: currentProbe === 'pass' ? 'The current deployment probe passed.' : 'Probe result is unknown; the failure streak was reset.',
+    };
+  }
+  if (streak.consecutiveFailures < 3 || !streak.firstFailureAt) {
+    return {
+      action: 'monitor',
+      consecutiveFailures: streak.consecutiveFailures,
+      reason: 'Waiting for three consecutive failures of the same probe.',
+    };
+  }
+
+  const id = incidentId(options.projectId, current.id, probePath);
+  const existing = options.store.get(id);
+  if (existing) {
+    let updated = false;
+    const lastActivity = Date.parse(existing.events.at(-1)?.at ?? existing.detectedAt);
+    const actionStalled = existing.status === 'detected' && existing.decision === 'rollback'
+      || existing.status === 'rolling_back' && now().getTime() - lastActivity > 2 * 60_000;
+    if (actionStalled) {
+      existing.status = 'needs_human';
+      existing.decision = 'escalate';
+      existing.evidence.push('A previous controller action did not reach a recorded terminal result; no retry was made.');
+      existing.events.push(event(now().toISOString(), 'escalation', 'An interrupted or stalled rollback requires human verification.'));
+      options.store.save(existing);
+      updated = true;
+    }
+    return { action: 'incident', incident: existing, duplicate: true, updated };
+  }
+
+  let previous: Deployment | null = null;
+  let previousProbe: ProbeResult = 'unknown';
+  let previousEvidence = 'Predecessor probe was not completed.';
+  try {
+    previous = await options.provider.getPreviousDeployment(options.projectId, current.id);
+    if (previous) {
+      const previousUrl = safeImmutableUrl(previous.immutableUrl);
+      if (previousUrl) {
+        const result = await options.provider.probeImmutableDeployment(previousUrl, probePath);
+        previousProbe = result.result;
+        previousEvidence = evidence(result.evidence);
+      } else {
+        previousEvidence = 'Provider returned an invalid predecessor deployment URL.';
+      }
+    } else {
+      previousEvidence = 'No trustworthy immediate predecessor was found.';
+    }
+  } catch {
+    previousEvidence = 'Predecessor lookup or probe failed.';
+  }
+
+  let currentDeploymentIsProduction = false;
+  try {
+    const activeDeployment = await options.provider.getProductionDeployment(options.projectId);
+    currentDeploymentIsProduction = activeDeployment?.id === current.id;
+  } catch {
+    currentDeploymentIsProduction = false;
+  }
+
+  const firstFailureMs = Date.parse(streak.firstFailureAt);
+  const deploymentCreatedMs = Date.parse(current.createdAt);
+  const ageMs = now().getTime() - firstFailureMs;
+  const deploymentAgeAtFirstFailure = firstFailureMs - deploymentCreatedMs;
+  const recencyWindowMs = options.recencyWindowMs ?? 15 * 60_000;
+  const decision = decideIncident({
+    kind: 'runtime_regression',
+    projectId: options.projectId,
+    allowlistedProjectIds: options.allowlistedProjectIds,
+    currentDeploymentIsProduction,
+    currentDeploymentIsRecent: Number.isFinite(firstFailureMs)
+      && Number.isFinite(deploymentCreatedMs)
+      && ageMs >= 0
+      && ageMs <= recencyWindowMs
+      && deploymentAgeAtFirstFailure >= 0
+      && deploymentAgeAtFirstFailure <= recencyWindowMs,
+    consecutiveCurrentFailures: streak.consecutiveFailures,
+    probePath,
+    currentProbe,
+    previousDeploymentId: previous?.id,
+    previousProbePath: previous ? probePath : undefined,
+    previousProbe,
+    evidenceConsistent: currentProbe === 'fail',
+    rollbackAlreadyAttempted: false,
+  });
+
+  let incident = makeIncident(
+    options,
+    current,
+    previous,
+    currentEvidence,
+    previousProbe,
+    previousEvidence,
+    streak.consecutiveFailures,
+    streak.firstFailureAt,
+    currentDeploymentIsProduction,
+    decision,
+    now().toISOString(),
+  );
+
+  if (decision.action !== 'rollback') {
+    incident.status = 'needs_human';
+    options.store.save(incident);
+    return { action: 'incident', incident };
+  }
+
+  options.store.save(incident);
+  if (!options.store.claimRollback(current.id, now().toISOString())) {
+    incident.status = 'needs_human';
+    incident.decision = 'escalate';
+    incident.evidence.push('A rollback attempt was already recorded for this deployment; no repeat action was made.');
+    incident.events.push(event(now().toISOString(), 'escalation', 'Rollback attempt guard prevented another action.'));
+    options.store.save(incident);
+    return { action: 'incident', incident };
+  }
+
+  incident.status = 'rolling_back';
+  incident.events.push(event(now().toISOString(), 'rollback_started', 'One guarded rollback attempt was started.'));
+  options.store.save(incident);
+
+  try {
+    const rollback = await options.provider.rollbackProductionTo(options.projectId, previous!.id);
+    const actionUrl = safeLink(rollback.actionUrl);
+    if (actionUrl) incident.actionUrl = actionUrl;
+    incident.events.push(event(now().toISOString(), 'rollback_completed', 'Rollback provider accepted the action; recovery is not yet verified.'));
+  } catch (error) {
+    incident.status = 'needs_human';
+    incident.decision = 'escalate';
+    incident.evidence.push(evidence(`Rollback request failed: ${String(error)}`));
+    incident.events.push(event(now().toISOString(), 'escalation', 'Rollback request failed; no retry will be attempted.'));
+    options.store.save(incident);
+    return { action: 'incident', incident };
+  }
+
+  const attempts = Math.max(1, Math.min(Math.trunc(options.recoveryAttempts ?? 3), 5));
+  const delayMs = Math.max(0, Math.min(options.recoveryDelayMs ?? 2_000, 15_000));
+  const wait = options.wait ?? defaultWait;
+  let recovered = false;
+  let verificationEvidence = 'Production recovery was not verified.';
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const verification = await options.provider.probeProduction(options.projectId, probePath);
+      verificationEvidence = evidence(verification.evidence);
+      if (verification.result === 'pass') {
+        recovered = true;
+        break;
+      }
+    } catch {
+      verificationEvidence = 'Production recovery probe failed before receiving a response.';
+    }
+    if (attempt < attempts && delayMs > 0) await wait(delayMs);
+  }
+
+  if (recovered) {
+    incident.status = 'recovered';
+    incident.events.push(event(now().toISOString(), 'verification', `Production recovery verified: ${verificationEvidence}`));
+  } else {
+    incident.status = 'needs_human';
+    incident.decision = 'escalate';
+    incident.evidence.push(evidence(`Rollback recovery verification failed: ${verificationEvidence}`));
+    incident.events.push(event(now().toISOString(), 'escalation', 'Recovery was not verified; no additional rollback will be attempted.'));
+  }
+  options.store.save(incident);
+  return { action: 'incident', incident };
+}
