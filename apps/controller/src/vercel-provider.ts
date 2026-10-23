@@ -1,6 +1,5 @@
-import type { Deployment, DeploymentProvider, DeploymentState, DeploymentStatus, ProbeResponse } from './monitor';
+import type { Deployment, DeploymentProvider, DeploymentState, DeploymentStatus, DeploymentSummary, ProbeResponse, RateLimitInfo, RuntimeLog } from './monitor';
 import { redact } from '@nexathon/notifier/format';
-import type { RuntimeLog } from './monitor';
 
 const apiBase = 'https://api.vercel.com';
 
@@ -77,10 +76,17 @@ function mapDeploymentStatus(value: unknown, projectId: string): DeploymentStatu
   return { id, state: knownState, createdAt, ...(immutableUrl ? { immutableUrl } : {}), ...(commitSha ? { commitSha } : {}) };
 }
 
+function rateLimitResetMs(value: number): number {
+  // Vercel reports x-ratelimit-reset in milliseconds, but guard against
+  // second-precision timestamps so the backoff window is never wrong by 1000x.
+  return value > 1e11 ? value : value * 1000;
+}
+
 export class VercelProvider implements DeploymentProvider {
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly timeoutMs: number;
   private readonly productionDomain: string;
+  private rateLimit: RateLimitInfo | null = null;
 
   constructor(private readonly options: VercelProviderOptions) {
     if (!options.accessToken.trim()) throw new Error('Vercel access token is required.');
@@ -117,12 +123,33 @@ export class VercelProvider implements DeploymentProvider {
           ...init.headers,
         },
       });
+      this.trackRateLimit(response);
       if (!response.ok) throw new Error(`Vercel API request failed with HTTP ${response.status}.`);
       return response;
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('Vercel API request failed')) throw error;
       throw new Error('Vercel API request failed or timed out.');
     }
+  }
+
+  private trackRateLimit(response: Response): void {
+    const numberHeader = (name: string): number | null => {
+      const raw = response.headers.get(name);
+      const parsed = raw === null ? Number.NaN : Number(raw);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const info: RateLimitInfo = {
+      limit: numberHeader('x-ratelimit-limit'),
+      remaining: numberHeader('x-ratelimit-remaining'),
+      reset: numberHeader('x-ratelimit-reset'),
+    };
+    if (info.limit !== null || info.remaining !== null || info.reset !== null) {
+      this.rateLimit = { ...info, ...(info.reset !== null ? { reset: rateLimitResetMs(info.reset) } : {}) };
+    }
+  }
+
+  getRateLimit(): RateLimitInfo | null {
+    return this.rateLimit;
   }
 
   private async getDeployment(id: string): Promise<Deployment | null> {
@@ -166,31 +193,54 @@ export class VercelProvider implements DeploymentProvider {
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0] ?? null;
   }
 
-  async getRuntimeLogs(projectId: string, deploymentId: string): Promise<RuntimeLog[]> {
+  async listDeploymentsSince(projectId: string, sinceMs: number): Promise<DeploymentSummary[]> {
+    this.assertProject(projectId);
+    if (!Number.isFinite(sinceMs)) throw new Error('A valid since timestamp is required.');
+    const response = await this.request(this.apiUrl('/v7/deployments', {
+      projectId: this.options.projectId,
+      target: 'production',
+      since: String(Math.trunc(sinceMs)),
+      limit: '20',
+    }));
+    const body = object(await response.json());
+    const deployments = Array.isArray(body?.deployments) ? body.deployments : [];
+    return deployments
+      .map(item => mapDeploymentStatus(item, this.options.projectId))
+      .filter((item): item is DeploymentStatus => Boolean(item))
+      .filter(item => Date.parse(item.createdAt) >= sinceMs)
+      .map(item => ({ id: item.id, state: item.state, createdAt: item.createdAt }));
+  }
+
+  async getDeploymentEvents(projectId: string, deploymentId: string): Promise<RuntimeLog[]> {
     this.assertProject(projectId);
     if (!deploymentId.trim()) throw new Error('Vercel deployment ID is required.');
-    const response = await this.request(this.apiUrl(
-      `/v1/projects/${encodeURIComponent(this.options.projectId)}/deployments/${encodeURIComponent(deploymentId)}/runtime-logs`,
-    ));
-    const raw = await response.text();
-    const values = parseLogStream(raw);
+    const url = this.apiUrl(`/v3/deployments/${encodeURIComponent(deploymentId)}/events`, { limit: '150' });
+    const response = await this.request(url);
+    const values = parseLogStream(await response.text());
     return values.flatMap((value, index) => {
       const item = object(value);
-      const message = text(item?.message);
-      const id = text(item?.rowId) ?? text(item?.id) ?? `${deploymentId}-${index}`;
-      const level = text(item?.level) ?? 'info';
-      const timestamp = typeof item?.timestampInMs === 'number' ? item.timestampInMs : Date.now();
-      const statusCode = typeof item?.responseStatusCode === 'number' ? item.responseStatusCode : undefined;
+      const message = text(item?.text);
       if (!message) return [];
+      const type = text(item?.type) ?? 'stdout';
+      const level = type === 'error' || type === 'fatal' ? 'error' : type === 'stderr' ? 'warn' : 'info';
+      const timestamp = typeof item?.created === 'number' ? item.created
+        : typeof item?.date === 'number' ? item.date
+        : Date.now();
       return [{
-        id,
+        id: text(item?.id) ?? text(item?.serial) ?? `${deploymentId}-event-${index}`,
         level,
         message: redact(message, 600),
-        ...(statusCode !== undefined ? { statusCode } : {}),
         timestamp,
-        isError: level === 'error' || level === 'fatal' || (statusCode !== undefined && statusCode >= 500),
+        isError: level === 'error',
       }];
     }).slice(-50);
+  }
+
+  async getDeploymentLogs(projectId: string, deploymentId: string): Promise<string[]> {
+    this.assertProject(projectId);
+    if (!deploymentId.trim()) throw new Error('Vercel deployment ID is required.');
+    const logs = await this.getDeploymentEvents(projectId, deploymentId);
+    return logs.slice(-8).map(log => `${log.level}: ${log.message}`);
   }
 
   async getPreviousDeployment(projectId: string, deploymentId: string): Promise<Deployment | null> {

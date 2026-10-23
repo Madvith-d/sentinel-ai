@@ -8,7 +8,7 @@ import { dispatchRun } from './remediation';
 import { startPollingWorker, type PollingWorker } from './worker';
 import { VercelProvider } from './vercel-provider';
 import { CoolifyProvider, RailwayProvider, RenderProvider } from './platform-providers';
-import type { DeploymentProvider, RuntimeLog } from './monitor';
+import type { DeploymentProvider, DeploymentSummary, RuntimeLog } from './monitor';
 import { createControllerActions, type RemediationConfig } from './actions';
 import { applyStoredSettings, createSettingsApi } from './settings';
 import { disconnectFields, exchangeGithubManifest, githubConnectTarget, githubCredentials, githubStateOk, installationExists, listInstallationRepositories, matchingVercelProject, verifyGithubWebhook } from './github-app';
@@ -55,6 +55,7 @@ type MonitorConfig = {
   probePath: string;
   pollIntervalMs: number;
   deploymentStatusIntervalMs: number;
+  logsIntervalMs: number;
   provider: DeploymentProvider;
   platform: string;
 };
@@ -73,6 +74,10 @@ function readMonitorConfig(): MonitorConfig {
   const deploymentStatusIntervalMs = Number(process.env.CONTROLLER_DEPLOYMENT_STATUS_INTERVAL_MS ?? 60_000);
   if (!Number.isInteger(deploymentStatusIntervalMs) || deploymentStatusIntervalMs < 1_000 || deploymentStatusIntervalMs > 600_000) {
     throw new Error('CONTROLLER_DEPLOYMENT_STATUS_INTERVAL_MS must be between 1000 and 600000.');
+  }
+  const logsIntervalMs = Number(process.env.CONTROLLER_LOGS_INTERVAL_MS ?? 300_000);
+  if (!Number.isInteger(logsIntervalMs) || logsIntervalMs < 60_000 || logsIntervalMs > 600_000) {
+    throw new Error('CONTROLLER_LOGS_INTERVAL_MS must be between 60000 and 600000.');
   }
   const productionUrl = platform === 'vercel' ? process.env.VERCEL_PRODUCTION_DOMAIN : platform === 'railway' ? process.env.RAILWAY_PRODUCTION_URL : platform === 'render' ? process.env.RENDER_PRODUCTION_URL : process.env.COOLIFY_PRODUCTION_URL;
   if (!productionUrl) throw new Error(`Monitoring requires a ${platform} public production URL.`);
@@ -94,7 +99,7 @@ function readMonitorConfig(): MonitorConfig {
     if (!token || !baseUrl) throw new Error('Coolify monitoring requires COOLIFY_API_TOKEN and COOLIFY_BASE_URL.');
     provider = new CoolifyProvider({ accessToken: token, applicationId: projectId, baseUrl, productionUrl });
   }
-  return { projectId, rollbackEnabled, probePath: process.env.CONTROLLER_PROBE_PATH ?? '/api/tasks', pollIntervalMs, deploymentStatusIntervalMs, provider, platform };
+  return { projectId, rollbackEnabled, probePath: process.env.CONTROLLER_PROBE_PATH ?? '/api/tasks', pollIntervalMs, deploymentStatusIntervalMs, logsIntervalMs, provider, platform };
 }
 
 const monitorConfig = monitorFlag === 'true' ? readMonitorConfig() : undefined;
@@ -160,11 +165,13 @@ const watch = {
   probePath: monitorConfig?.probePath ?? '/api/tasks',
   rollbackEnabled: Boolean(monitorConfig?.rollbackEnabled),
   intervalMs: monitorConfig?.pollIntervalMs ?? 30_000,
+  logsIntervalMs: monitorConfig?.logsIntervalMs ?? 300_000,
   failures: 0,
   probe: null as { checkedAt: string; result: 'pass' | 'fail' | 'unknown'; evidence: string; statusCode?: number } | null,
   logs: [] as RuntimeLog[],
   logsCheckedAt: null as string | null,
   logsError: null as string | null,
+  logsSource: null as 'runtime-logs' | 'deployment-events' | null,
   deployment: null as { id: string; url: string; createdAt: string } | null,
 };
 
@@ -172,8 +179,8 @@ let vercelDevice: { code: string; expiresAt: number } | undefined;
 let monitorWorker: PollingWorker | undefined;
 let logsTimer: ReturnType<typeof setInterval> | undefined;
 let deploymentWatchTimer: ReturnType<typeof setInterval> | undefined;
-let logsRefreshing = false;
-let loggedDeploymentId: string | undefined;
+let logsPulling = false;
+let rateLimitedUntil = 0;
 
 function dashboardOrigin(): string {
   const configured = process.env.DASHBOARD_ORIGIN ?? 'http://127.0.0.1:5173';
@@ -233,38 +240,104 @@ function launchMonitor(config: MonitorConfig): void {
       console.error('Controller monitor cycle failed.');
     },
   });
-  if (config.provider.getRuntimeLogs) {
-    const refreshLogs = async () => {
-      if (logsRefreshing) return;
-      logsRefreshing = true;
+  if (config.provider.listDeploymentsSince && config.provider.getDeploymentEvents) {
+    // Scheduled pull method: deployment event logs are immutable, so each
+    // deployment is fetched from /v3/deployments/{id}/events at most once
+    // (plus once more while it is still building). A window query lists the
+    // deployments created since the last cycle, and every request respects
+    // Vercel's rate-limit headers by backing off until the window resets.
+    const listDeploymentsSince = config.provider.listDeploymentsSince.bind(config.provider);
+    const getDeploymentEvents = config.provider.getDeploymentEvents.bind(config.provider);
+    const getRateLimit = config.provider.getRateLimit?.bind(config.provider);
+    const logCache = new Map<string, RuntimeLog[]>();
+    const pulled = new Set<string>();
+    const incomplete = new Set<string>();
+    let displayedDeploymentId: string | undefined;
+
+    const rateLimited = (): boolean => {
+      if (Date.now() < rateLimitedUntil) return true;
+      const info = getRateLimit?.();
+      if (info?.remaining !== null && info?.remaining !== undefined && info.remaining <= 20) {
+        const reset = info.reset ?? Date.now() + 60_000;
+        if (reset > Date.now()) {
+          rateLimitedUntil = reset;
+          console.info(`Vercel rate limit nearly exhausted (${info.remaining} left); log pulls pause until ${new Date(reset).toISOString()}.`);
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const pullDeployment = async (deployment: { id: string; state?: string }): Promise<void> => {
+      if (rateLimited()) return;
+      const logs = await getDeploymentEvents(config.projectId, deployment.id);
+      logCache.set(deployment.id, logs);
+      if (logCache.size > 12) logCache.delete(logCache.keys().next().value!);
+      pulled.add(deployment.id);
+      // A deployment first seen mid-build has a partial event stream; pull it
+      // again on a later cycle once it reports a terminal state.
+      if (deployment.state && deployment.state !== 'READY' && deployment.state !== 'ERROR') {
+        incomplete.add(deployment.id);
+      } else {
+        incomplete.delete(deployment.id);
+      }
+    };
+
+    const bindDisplay = async (deployment: { id: string; immutableUrl: string; createdAt: string }): Promise<void> => {
+      watch.deployment = { id: deployment.id, url: deployment.immutableUrl, createdAt: deployment.createdAt };
+      watch.logsSource = 'deployment-events';
+      displayedDeploymentId = deployment.id;
+      watch.logs = logCache.get(deployment.id) ?? watch.logs;
+      if (!logCache.has(deployment.id) || incomplete.has(deployment.id)) {
+        try {
+          await pullDeployment(deployment);
+          watch.logs = logCache.get(deployment.id) ?? [];
+          watch.logsError = null;
+        } catch (error) {
+          watch.logsError = error instanceof Error ? error.message : 'Deployment events could not be retrieved.';
+        }
+      }
+      watch.logsCheckedAt = new Date().toISOString();
+    };
+
+    const runPullCycle = async (): Promise<void> => {
+      if (logsPulling) return;
+      logsPulling = true;
       try {
-        const current = await config.provider.getProductionDeployment(config.projectId);
-        if (!current) throw new Error('No current production deployment is available.');
-        watch.logs = await config.provider.getRuntimeLogs!(config.projectId, current.id);
-        watch.deployment = { id: current.id, url: current.immutableUrl, createdAt: current.createdAt };
-        loggedDeploymentId = current.id;
+        const since = Date.now() - 2 * config.logsIntervalMs;
+        const deployments: DeploymentSummary[] = await listDeploymentsSince(config.projectId, since);
+        for (const deployment of deployments) {
+          if (!pulled.has(deployment.id) || incomplete.has(deployment.id)) await pullDeployment(deployment);
+        }
         watch.logsCheckedAt = new Date().toISOString();
         watch.logsError = null;
       } catch (error) {
+        const message = error instanceof Error ? error.message : 'The scheduled deployment log pull failed.';
+        if (message.includes('HTTP 429')) rateLimitedUntil = Date.now() + 60_000;
         watch.logsCheckedAt = new Date().toISOString();
-        watch.logsError = error instanceof Error ? error.message : 'Runtime logs could not be retrieved.';
+        watch.logsError = message;
       } finally {
-        logsRefreshing = false;
+        logsPulling = false;
       }
     };
-    void refreshLogs();
-    logsTimer = setInterval(() => { void refreshLogs(); }, 60_000);
+
+    void (async () => {
+      try {
+        const current = await config.provider.getProductionDeployment(config.projectId);
+        if (current) await bindDisplay(current);
+      } catch { /* the first scheduled cycle retries */ }
+    })();
+    logsTimer = setInterval(() => { void runPullCycle(); }, config.logsIntervalMs);
     // The production alias can move at any moment (a new deploy promoted or a
-    // rollback). Detect the switch quickly so the logs always name the
-    // deployment that currently serves production instead of waiting a full
-    // 60-second cycle.
+    // rollback). Detect the switch so the panel names the deployment that
+    // currently serves production without waiting a full pull cycle.
     deploymentWatchTimer = setInterval(() => {
-      if (logsRefreshing || loggedDeploymentId === undefined) return;
+      if (logsPulling || rateLimited() || displayedDeploymentId === undefined) return;
       void (async () => {
         try {
           const current = await config.provider.getProductionDeployment(config.projectId);
-          if (current && current.id !== loggedDeploymentId) await refreshLogs();
-        } catch { /* the next scheduled refresh retries */ }
+          if (current && current.id !== displayedDeploymentId) await bindDisplay(current);
+        } catch { /* the next scheduled cycle retries */ }
       })();
     }, 15_000);
   }

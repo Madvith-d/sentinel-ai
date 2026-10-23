@@ -26,6 +26,21 @@ export interface RuntimeLog {
   isError: boolean;
 }
 
+export type LogSource = 'runtime-logs' | 'deployment-events';
+
+export interface RateLimitInfo {
+  limit: number | null;
+  remaining: number | null;
+  /** Unix milliseconds when the current rate-limit window resets. */
+  reset: number | null;
+}
+
+export interface DeploymentSummary {
+  id: string;
+  state: DeploymentState;
+  createdAt: string;
+}
+
 export type DeploymentState = 'QUEUED' | 'BUILDING' | 'READY' | 'ERROR' | 'CANCELED' | 'UNKNOWN';
 
 export interface DeploymentStatus {
@@ -45,8 +60,12 @@ export interface DeploymentProvider {
   probeProduction(projectId: string, probePath: string): Promise<ProbeResponse>;
   /** Short, redacted-at-the-boundary diagnostic lines for an incident deployment. */
   getDeploymentLogs?(projectId: string, deploymentId: string): Promise<string[]>;
-  /** Bounded, redacted runtime logs for the dashboard watch surface. */
-  getRuntimeLogs?(projectId: string, deploymentId: string): Promise<RuntimeLog[]>;
+  /** Production deployments created after a unix-ms timestamp, for scheduled log pulls. */
+  listDeploymentsSince?(projectId: string, sinceMs: number): Promise<DeploymentSummary[]>;
+  /** Build/deployment event log of one deployment, pulled once per deployment. */
+  getDeploymentEvents?(projectId: string, deploymentId: string): Promise<RuntimeLog[]>;
+  /** Rate-limit telemetry parsed from the provider's most recent API response. */
+  getRateLimit?(): RateLimitInfo | null;
   /** Provider-owned host allowlist for deployment URLs returned by its API. */
   isSafeDeploymentUrl?(url: string): boolean;
 }

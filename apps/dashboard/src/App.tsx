@@ -38,6 +38,11 @@ function shortDeployment(value?: string) {
   return value ? value.replace(/^dpl_/, '').slice(0, 7) : '—';
 }
 
+function everyLabel(ms: number) {
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  return seconds >= 120 ? `${Math.max(1, Math.round(seconds / 60))}m` : `${seconds}s`;
+}
+
 function hostOf(value?: string) {
   if (!value) return '—';
   try { return new URL(value).host; } catch { return value; }
@@ -152,11 +157,12 @@ function WatchTelemetry({ watch }: { watch: WatchState | null }) {
   const probe = watch?.probe;
   const logs = watch?.logs ?? [];
   const deployment = watch?.deployment ?? null;
-  const probeEvery = `${Math.max(1, Math.round((watch?.intervalMs ?? 30_000) / 1000))}s`;
+  const probeEvery = everyLabel(watch?.intervalMs ?? 30_000);
+  const logsEvery = everyLabel(watch?.logsIntervalMs ?? 300_000);
   return <section className="panel telemetry-panel" aria-live="polite">
     <div className="section-heading">
       <h2>Production telemetry</h2>
-      <span>probe / {probeEvery} · logs / 60s</span>
+      <span>probe / {probeEvery} · logs / {logsEvery}</span>
     </div>
     <div className="telemetry-probe">
       <div>
@@ -176,9 +182,10 @@ function WatchTelemetry({ watch }: { watch: WatchState | null }) {
     </div>
     {probe?.result === 'fail' && <p className="probe-error">{probe.evidence}</p>}
     <div className="log-heading">
-      <strong>Vercel runtime logs{deployment ? <span className="mono log-deployment">{shortDeployment(deployment.id)}</span> : null}</strong>
+      <strong>Vercel {watch?.logsSource === 'deployment-events' ? 'deployment events' : 'runtime logs'}{deployment ? <span className="mono log-deployment">{shortDeployment(deployment.id)}</span> : null}</strong>
       <span>{watch?.logsCheckedAt ? `Updated ${formatTime(watch.logsCheckedAt)}` : 'Waiting for first log pull'}</span>
     </div>
+    {watch?.logsSource === 'deployment-events' && <p className="log-fallback-note">Runtime logs are unavailable on this Vercel plan, so the build and deployment events of the same deployment are shown.</p>}
     {watch?.logsError && <p className="telemetry-error" role="status">{watch.logsError}</p>}
     {!watch && <p className="telemetry-empty">Live telemetry appears when the controller is running.</p>}
     {watch && !watch.logsError && logs.length === 0 && <p className="telemetry-empty">No runtime logs returned for the current deployment.</p>}
@@ -253,12 +260,14 @@ type WatchState = {
   detail: string;
   probePath: string;
   intervalMs: number;
+  logsIntervalMs?: number;
   failures?: number;
   rollbackEnabled?: boolean;
   probe: { checkedAt: string; result: 'pass' | 'fail' | 'unknown'; evidence: string; statusCode?: number } | null;
   logs: WatchLog[];
   logsCheckedAt: string | null;
   logsError: string | null;
+  logsSource?: 'runtime-logs' | 'deployment-events' | null;
   deployment?: { id: string; url: string; createdAt: string } | null;
 };
 
