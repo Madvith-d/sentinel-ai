@@ -27,6 +27,7 @@ export function Setup({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [vercel, setVercel] = useState<VercelConnect>(null);
   const [repos, setRepos] = useState<string[]>([]);
+  const [repoQuery, setRepoQuery] = useState('');
   const [projects, setProjects] = useState<{ id: string; name: string; domains: string[]; teamId?: string }[]>([]);
   const [monitorNote, setMonitorNote] = useState('');
   const [githubListNote, setGithubListNote] = useState('Repository list has not loaded.');
@@ -221,10 +222,14 @@ export function Setup({ onClose }: { onClose: () => void }) {
     {githubReady && <section className="setup-hero">
       <div className="setup-hero-copy"><div><h2>Repository</h2><p>Choose the repo the bot can open pull requests on.</p></div></div>
       <label className="setup-field">
+        <span>Search repositories</span>
+        <input value={repoQuery} placeholder="owner/name" onChange={event => setRepoQuery(event.target.value)} />
+      </label>
+      <label className="setup-field">
         <span>Repository</span>
         <select value={repos.includes(draft.REMEDIATOR_REPOSITORY ?? '') ? draft.REMEDIATOR_REPOSITORY : ''} onChange={event => void choose('REMEDIATOR_REPOSITORY', event.target.value)}>
           <option value="">Choose a repository</option>
-          {repos.map(repo => <option key={repo} value={repo}>{repo}</option>)}
+          {repos.filter(repo => repo.toLowerCase().includes(repoQuery.trim().toLowerCase())).map(repo => <option key={repo} value={repo}>{repo}</option>)}
         </select>
       </label>
     </section>}

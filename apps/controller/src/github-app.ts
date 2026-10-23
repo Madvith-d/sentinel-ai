@@ -109,11 +109,19 @@ export async function installationExists(appId: string, pem: string, installatio
 
 export async function listInstallationRepositories(appId: string, pem: string, installationId: string): Promise<string[]> {
   const token = await installationToken(appId, pem, installationId, 'read');
-  const response = await fetch('https://api.github.com/installation/repositories?per_page=100', {
-    headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}`, 'User-Agent': 'sentinel' },
-  });
-  if (!response.ok) throw new Error('GitHub did not list the installation repositories.');
-  return installationRepositoryNames(await response.json());
+  const names: string[] = [];
+  for (let page = 1; page <= 30; page += 1) {
+    const response = await fetch(`https://api.github.com/installation/repositories?per_page=100&page=${page}`, {
+      headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}`, 'User-Agent': 'sentinel' },
+    });
+    if (!response.ok) throw new Error('GitHub did not list the installation repositories.');
+    const body = await response.json() as { total_count?: number };
+    const pageNames = installationRepositoryNames(body);
+    names.push(...pageNames);
+    const total = body.total_count;
+    if (pageNames.length < 100 || (typeof total === 'number' && names.length >= total)) break;
+  }
+  return [...new Set(names)].sort((left, right) => left.localeCompare(right));
 }
 
 export async function installationToken(appId: string, pem: string, installationId: string, access: 'read' | 'write'): Promise<string> {
