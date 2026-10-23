@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -63,6 +63,10 @@ export async function publishDraftPr(request: RemediationRequest, fix: Remediati
     await writeFile(patchFile, fix.patch, { mode: 0o600 });
     await run('git', ['apply', '--check', patchFile], repoDir, env);
     await run('git', ['apply', '--index', patchFile], repoDir, env);
+    if (request.reproductionFixture) {
+      const fixture = await readFile(join(repoDir, request.reproductionFixture.path), 'utf8');
+      if (fixture !== request.reproductionFixture.content) throw new Error('Patch modified the trusted regression test');
+    }
     const staged = await run('git', ['diff', '--cached', '--name-only'], repoDir, env);
     validateChangedFiles(staged.split('\n').filter(Boolean));
     await run('git', ['-c', 'user.name=Nexathon Remediation Agent', '-c', 'user.email=agent@users.noreply.github.com', 'commit', '-m', `fix: remediate incident ${request.incidentId}`], repoDir, env);

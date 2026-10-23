@@ -39,6 +39,18 @@ E2B_REMEDIATOR_TEMPLATE=iotserver24/zns-bench-2cpu-4gb \
 
 The source fixture is `fixtures/task-filter.repro.ts.txt`; it is copied only into the ephemeral sandbox. This rehearsal makes **no GitHub branch/PR, production change, model call, or persistent sample-app edit**. It tests the fix pipeline mechanics, **not** Supercharge's ability to produce a fix. The full AI path still needs dedicated credentials, a real controller dispatch, and an incident-specific regression test.
 
+## Manual Supercharge fix-path demo (when dedicated credentials exist)
+
+The controller is not required for this **isolated demonstration**. Copy `.env.example` into your own ignored local environment file (or set variables in the shell) and use a dedicated spend-limited model key, a separate read-only GitHub MCP token, and the 4 GiB+ E2B template:
+
+```sh
+bun run --cwd packages/remediator demo:fix --sha=$(git rev-parse origin/main)
+# Only after reviewing the dry-run outcome; this repeats the model run and opens a draft PR:
+bun run --cwd packages/remediator demo:fix --sha=$(git rev-parse origin/main) --publish
+```
+
+`demo:fix` uploads the trusted regression fixture into E2B before the baseline, rejects agent edits to that test, requires failing-before/passing-after plus all sample tests/build, and prints only a summary. Without `--publish`, it never pushes or opens a PR. With `--publish`, the **controller-side** publisher needs a repository-scoped `GH_TOKEN`; no write token enters E2B. This is a fixture-driven PR demo, **not** production incident detection or automatic rollback. The exact cloned commit must not already contain `apps/sample/tests/filter.repro.test.ts`.
+
 ## Controller integration
 
 Ronit should add `"@nexathon/remediator": "workspace:*"` to `apps/controller/package.json` and run `bun install` at the root before importing this package. The controller owns the incident-to-request mapping and keeps its GitHub write token locally.
