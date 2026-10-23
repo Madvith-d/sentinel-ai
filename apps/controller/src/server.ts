@@ -9,6 +9,8 @@ import { startPollingWorker, type PollingWorker } from './worker';
 import { VercelProvider } from './vercel-provider';
 import { createControllerActions, type RemediationConfig } from './actions';
 import { applyStoredSettings, createSettingsApi } from './settings';
+import { exchangeGithubManifest, githubConnectPage, githubCredentials, githubStateOk } from './github-app';
+import { pollVercelDevice, startVercelDevice } from './vercel-login';
 
 const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const databasePath = resolve(packageDirectory, process.env.INCIDENT_DB_PATH ?? './data/incidents.sqlite');
@@ -103,7 +105,7 @@ if (remediationFlag === 'true') {
   };
 }
 const hub = new ActivityHub();
-const actions = createControllerActions({ slackWebhookUrl: process.env.SLACK_WEBHOOK_URL, remediation }, hub);
+const actions = createControllerActions({ slackWebhookUrl: process.env.SLACK_WEBHOOK_URL, remediation, settings: store }, hub);
 const incidentApi = createIncidentApi(store);
 const settingsApi = createSettingsApi(store);
 const activityApi = createActivityApi({
@@ -122,11 +124,70 @@ const watch = {
   intervalMs: monitorConfig?.pollIntervalMs ?? 30_000,
 };
 
+let vercelDevice: { code: string; expiresAt: number } | undefined;
+
+async function integrationRoutes(request: Request, settingsStore: typeof store): Promise<Response | null> {
+  const url = new URL(request.url);
+  const dashboard = 'http://127.0.0.1:5173/';
+  if (url.pathname === '/api/github/connect' && request.method === 'GET') {
+    const owner = url.searchParams.get('owner')?.trim();
+    return new Response(githubConnectPage(`http://${host}:${port}`, owner || undefined), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+  }
+  if (url.pathname === '/api/github/callback' && request.method === 'GET') {
+    const returnedState = url.searchParams.get('state');
+    if (returnedState && !githubStateOk(returnedState)) return Response.json({ error: 'GitHub connect state did not match.' }, { status: 400 });
+    const code = url.searchParams.get('code');
+    if (!code) return Response.json({ error: 'GitHub did not return an app code.' }, { status: 400 });
+    try {
+      const saved = await exchangeGithubManifest(code);
+      settingsStore.writeSettings(saved);
+      const slug = saved.GITHUB_APP_SLUG;
+      return Response.redirect(`https://github.com/apps/${encodeURIComponent(slug)}/installations/new`, 302);
+    } catch {
+      return Response.json({ error: 'GitHub app setup did not finish.' }, { status: 502 });
+    }
+  }
+  if (url.pathname === '/api/github/installed' && request.method === 'GET') {
+    const installationId = url.searchParams.get('installation_id');
+    if (!installationId || !/^\d+$/.test(installationId)) return Response.json({ error: 'GitHub installation id was missing.' }, { status: 400 });
+    settingsStore.writeSettings({ GITHUB_INSTALLATION_ID: installationId });
+    return Response.redirect(`${dashboard}?setup=github`, 302);
+  }
+  if (url.pathname === '/api/vercel/connect' && request.method === 'POST') {
+    try {
+      const device = await startVercelDevice();
+      vercelDevice = { code: device.deviceCode, expiresAt: device.expiresAt };
+      return Response.json({ userCode: device.userCode, verificationUri: device.verificationUri, intervalMs: device.intervalMs });
+    } catch {
+      return Response.json({ error: 'Vercel sign-in did not start.' }, { status: 502 });
+    }
+  }
+  if (url.pathname === '/api/vercel/connect' && request.method === 'GET') {
+    if (!vercelDevice || vercelDevice.expiresAt < Date.now()) return Response.json({ error: 'Start Vercel sign-in again.' }, { status: 404 });
+    try {
+      const result = await pollVercelDevice(vercelDevice.code);
+      if (result.pending) return Response.json({ pending: true });
+      if (!result.accessToken) return Response.json({ error: 'Vercel sign-in did not finish.' }, { status: 502 });
+      settingsStore.writeSettings({
+        VERCEL_ACCESS_TOKEN: result.accessToken,
+        ...(result.refreshToken ? { VERCEL_REFRESH_TOKEN: result.refreshToken } : {}),
+      });
+      vercelDevice = undefined;
+      return Response.json({ ok: true, restartRequired: true });
+    } catch {
+      return Response.json({ error: 'Vercel sign-in did not finish.' }, { status: 502 });
+    }
+  }
+  return null;
+}
+
 const server = Bun.serve({
   hostname: host,
   port,
   fetch: async (request, bunServer) => {
     const url = new URL(request.url);
+    const connect = await integrationRoutes(request, store);
+    if (connect) return connect;
     const settingsResponse = await settingsApi(request);
     if (settingsResponse) return settingsResponse;
     if (url.pathname === '/api/watch') {

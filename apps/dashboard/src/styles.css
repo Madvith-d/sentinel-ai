@@ -36,6 +36,7 @@ h1, h2, strong { font-family: 'Space Grotesk', sans-serif; }
 .setup-group h2 { margin-bottom: 0; font-size: 18px; }
 .setup label { display: grid; gap: 4px; color: #4d6482; font-size: 13px; }
 .setup input { border: 1px solid #c9d5e4; border-radius: 6px; padding: 8px 10px; background: #fff; color: #1c314d; }
+a.action { display: inline-block; margin-right: 8px; text-decoration: none; }
 .incident-list { display: grid; gap: 8px; margin-top: 14px; }
 .incident-card { width: 100%; padding: 14px 12px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: #243b5a; text-align: left; }
 .incident-card:hover, .incident-card:focus-visible { background: #edf3f8; border-color: #d5e0eb; outline: none; }

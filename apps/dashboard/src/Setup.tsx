@@ -15,6 +15,26 @@ export function Setup({ onClose }: { onClose: () => void }) {
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [vercel, setVercel] = useState<{ userCode: string; verificationUri: string; status: string } | null>(null);
+
+  async function connectVercel() {
+    setError('');
+    const started = await fetch('/api/vercel/connect', { method: 'POST', headers: { Accept: 'application/json' } });
+    if (!started.ok) { setError('Vercel sign-in did not start.'); return; }
+    const body = await started.json() as { userCode: string; verificationUri: string; intervalMs: number };
+    setVercel({ userCode: body.userCode, verificationUri: body.verificationUri, status: 'Waiting for approval.' });
+    window.open(body.verificationUri, '_blank', 'noopener');
+    const timer = window.setInterval(async () => {
+      const poll = await fetch('/api/vercel/connect', { headers: { Accept: 'application/json' } });
+      if (poll.status === 404) { window.clearInterval(timer); setError('Vercel sign-in expired. Start it again.'); return; }
+      if (!poll.ok) return;
+      const result = await poll.json() as { pending?: boolean; ok?: boolean };
+      if (result.ok) {
+        window.clearInterval(timer);
+        setVercel(current => current ? { ...current, status: 'Connected. Restart Keel to use this session.' } : current);
+      }
+    }, Math.max(body.intervalMs, 5000));
+  }
 
   useEffect(() => {
     const abort = new AbortController();
@@ -49,7 +69,12 @@ export function Setup({ onClose }: { onClose: () => void }) {
 
   return <main className="detail setup">
     <div className="section-heading"><div><p className="eyebrow">Setup</p><h1>Integrations</h1></div><button className="refresh" type="button" onClick={onClose}>Back to incidents</button></div>
-    <p className="setup-note">These values live in the controller database and override the environment on the next start. Leave a secret blank to keep the current one.</p>
+    <p className="setup-note">Connect GitHub and Vercel in the browser. Keel stores the app and the Vercel session in the controller database. Personal tokens below are only a fallback. Restart Keel after connecting.</p>
+    <section className="setup-group"><h2>Connect</h2>
+      <p><a className="action" href="/api/github/connect">Connect GitHub</a> creates a private Keel GitHub App and installs it on the repo. Pull requests use a short-lived installation token. The sandbox gets a read-only token from the same app.</p>
+      <button className="action" type="button" onClick={() => void connectVercel()}>Connect Vercel</button>
+      {vercel && <p className="setup-note">Open <a href={vercel.verificationUri}>{vercel.verificationUri}</a> and enter <strong>{vercel.userCode}</strong>. {vercel.status}</p>}
+    </section>
     {error && <div className="error-box" role="alert"><strong>Setup unavailable</strong><p>{error}</p></div>}
     {groups.map(group => <section key={group} className="setup-group"><h2>{group}</h2>
       {fields.filter(field => field.group === group).map(field => <label key={field.key}>{field.label}

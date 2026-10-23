@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { generateFixInE2B, publishDraftPr, type ProviderConfig, type RemediationRequest } from '@nexathon/remediator';
 import { notifyIncident, redact, type Incident } from '@nexathon/notifier';
+import { githubCredentials } from './github-app';
+import type { IncidentStore } from './incident-store';
 import type { ActivityHub } from './activity';
 import type { MonitorActions, RemediationOutcome } from './monitor';
 
@@ -17,9 +19,10 @@ export interface RemediationConfig {
 export interface ControllerActionsConfig {
   slackWebhookUrl?: string;
   remediation?: RemediationConfig;
+  settings?: Pick<IncidentStore, 'readSettings'>;
 }
 
-async function runRemediation(incident: Incident, config: RemediationConfig, hub?: ActivityHub): Promise<RemediationOutcome> {
+async function runRemediation(incident: Incident, config: RemediationConfig, hub?: ActivityHub, settings?: Pick<IncidentStore, 'readSettings'>): Promise<RemediationOutcome> {
   if (!incident.commitSha) return { ok: false, message: 'Incident has no commit SHA; remediation was not started.' };
 
   let reproductionFixture: RemediationRequest['reproductionFixture'];
@@ -31,6 +34,19 @@ async function runRemediation(incident: Incident, config: RemediationConfig, hub
       };
     } catch {
       return { ok: false, message: 'Trusted remediation fixture could not be read; no PR was created.' };
+    }
+  }
+
+  if (settings) {
+    try {
+      const credentials = await githubCredentials(settings);
+      if (credentials.write) process.env.GH_TOKEN = credentials.write;
+      if (credentials.read) {
+        process.env.GITHUB_READ_TOKEN = credentials.read;
+        config.provider.githubReadToken = credentials.read;
+      }
+    } catch (error) {
+      return { ok: false, message: 'Remediation stopped safely: GitHub app token was not issued.', evidence: [redact(String(error))] };
     }
   }
 
@@ -83,6 +99,6 @@ export function createControllerActions(config: ControllerActionsConfig, hub?: A
         ? { ok: true, message: sentByEmail ? 'Email notification sent.' : 'Slack notification sent.' }
         : { ok: false, message: result.message };
     },
-    ...(config.remediation ? { remediate: incident => runRemediation(incident, config.remediation!, hub) } : {}),
+    ...(config.remediation ? { remediate: incident => runRemediation(incident, config.remediation!, hub, config.settings) } : {}),
   };
 }

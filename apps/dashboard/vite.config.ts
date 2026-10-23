@@ -18,6 +18,8 @@ export default defineConfig(({ mode }) => {
     },
     // Read-only views of the agent feed. The run trigger is never proxied.
     '^/api/settings(?:\\?.*)?$': { target, changeOrigin: false },
+    '^/api/github/(?:connect|callback|installed)(?:\\?.*)?$': { target, changeOrigin: false },
+    '^/api/vercel/connect(?:\\?.*)?$': { target, changeOrigin: false },
     '^/api/watch(?:\\?.*)?$': {
       target, changeOrigin: false,
       bypass(req: { method?: string }) {

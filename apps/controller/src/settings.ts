@@ -11,15 +11,20 @@ export interface SettingField {
 }
 
 export const settingFields: SettingField[] = [
-  { group: 'Vercel', key: 'VERCEL_ACCESS_TOKEN', label: 'Access token', secret: true },
+  { group: 'Vercel', key: 'VERCEL_ACCESS_TOKEN', label: 'Access token (filled by Connect Vercel)', secret: true },
+  { group: 'Vercel', key: 'VERCEL_REFRESH_TOKEN', label: 'Refresh token', secret: true },
   { group: 'Vercel', key: 'VERCEL_TEAM_ID', label: 'Team id', secret: false },
   { group: 'Vercel', key: 'VERCEL_PROJECT_ID', label: 'Project id', secret: false },
   { group: 'Vercel', key: 'VERCEL_PRODUCTION_DOMAIN', label: 'Public production host', secret: false },
   { group: 'Vercel', key: 'CONTROLLER_PROBE_PATH', label: 'Probe path', secret: false },
   { group: 'Vercel', key: 'CONTROLLER_MONITOR_ENABLED', label: 'Monitoring (true/false)', secret: false },
   { group: 'Vercel', key: 'CONTROLLER_ROLLBACK_ENABLED', label: 'Rollback (true/false)', secret: false },
-  { group: 'GitHub', key: 'GH_TOKEN', label: 'Token used to open pull requests', secret: true },
-  { group: 'GitHub', key: 'GITHUB_READ_TOKEN', label: 'Read token for the sandbox', secret: true },
+  { group: 'GitHub', key: 'GITHUB_APP_ID', label: 'App id (filled by Connect GitHub)', secret: false },
+  { group: 'GitHub', key: 'GITHUB_APP_SLUG', label: 'App slug', secret: false },
+  { group: 'GitHub', key: 'GITHUB_INSTALLATION_ID', label: 'Installation id', secret: false },
+  { group: 'GitHub', key: 'GITHUB_APP_PEM', label: 'App private key', secret: true },
+  { group: 'GitHub', key: 'GH_TOKEN', label: 'Personal token fallback for pull requests', secret: true },
+  { group: 'GitHub', key: 'GITHUB_READ_TOKEN', label: 'Personal read-token fallback', secret: true },
   { group: 'GitHub', key: 'REMEDIATOR_REPOSITORY', label: 'Repository (owner/name)', secret: false },
   { group: 'Sandbox', key: 'E2B_API_KEY', label: 'E2B API key', secret: true },
   { group: 'Sandbox', key: 'E2B_REMEDIATOR_TEMPLATE', label: 'E2B template', secret: false },
