@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Shell(cd /home/madvith/Projects/nex/nexathon && echo \"=== controller typecheck ===\" && bun run --filter @nexathon/controller typecheck 2>&1; echo \"=== controller test ===\" && bun run --filter @nexathon/controller test 2>&1; echo \"=== notifier ===\" && bun run --filter @nexathon/notifier test 2>&1 && bun run --filter @nexathon/notifier typecheck 2>&1; echo \"=== remediator ===\" && bun run --filter @nexathon/remediator test 2>&1 && bun run --filter @nexathon/remediator typecheck 2>&1)"
+      "Shell(cd /home/madvith/Projects/nex/nexathon && echo \"=== controller typecheck ===\" && bun run --filter @nexathon/controller typecheck 2>&1; echo \"=== controller test ===\" && bun run --filter @nexathon/controller test 2>&1; echo \"=== notifier ===\" && bun run --filter @nexathon/notifier test 2>&1 && bun run --filter @nexathon/notifier typecheck 2>&1; echo \"=== remediator ===\" && bun run --filter @nexathon/remediator test 2>&1 && bun run --filter @nexathon/remediator typecheck 2>&1)",
+      "Shell(bun:*)"
     ],
     "deny": [],
     "defaultMode": "default"
