@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   decisionLabels,
   kindLabels,
@@ -31,6 +31,11 @@ function shortSha(value?: string) {
   return value ? value.slice(0, 7) : '—';
 }
 
+function hostOf(value?: string) {
+  if (!value) return '—';
+  try { return new URL(value).host; } catch { return value; }
+}
+
 function StatusPill({ status }: { status: Incident['status'] }) {
   return <span className={`status status-${status}`}>{statusLabels[status]}</span>;
 }
@@ -40,7 +45,7 @@ function IncidentCard({ incident, selected, onSelect }: { incident: Incident; se
     <button className={`incident-card${selected ? ' selected' : ''}`} onClick={onSelect} type="button">
       <span className="card-topline"><span>{formatDate(incident.detectedAt)}</span><StatusPill status={incident.status} /></span>
       <strong>{kindLabels[incident.kind]}</strong>
-      <span className="card-meta">{incident.projectId} · {shortSha(incident.commitSha)}</span>
+      <span className="card-meta">{incident.decision ? decisionLabels[incident.decision] : 'Pending'} · {shortSha(incident.commitSha)} · {incident.probePath ?? 'build'}</span>
       <span className="card-summary">{incident.evidence[0] ?? 'No evidence recorded.'}</span>
     </button>
   );
@@ -67,7 +72,12 @@ function Timeline({ events }: { events: Incident['events'] }) {
 
 function LiveActivity({ incidentId }: { incidentId: string }) {
   const { run, events, error } = useActivity(mode, incidentId);
+  const feed = useRef<HTMLOListElement>(null);
   const live = run?.status === 'queued' || run?.status === 'running';
+  useEffect(() => {
+    const node = feed.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [events.length, run?.outcome]);
   return <section className="panel activity-panel" aria-live="polite">
     <div className="section-heading">
       <h2>Live agent activity</h2>
@@ -85,7 +95,8 @@ function LiveActivity({ incidentId }: { incidentId: string }) {
         : 'No agent run for this incident yet. Start one with `bun run --cwd apps/controller start:run -- --incident=' + incidentId + '`.'}
     </p>}
     {run && <>
-      <ol className="activity-feed">
+      <p className="activity-now">{events.at(-1)?.message ?? 'Waiting for the first progress event.'}</p>
+      <ol className="activity-feed" ref={feed}>
         {events.map(event => <li key={event.seq} className={`activity-item phase-${event.phase}`}>
           <span className="activity-phase">{phaseLabels[event.phase] ?? event.phase}</span>
           <p>{event.message}</p>
@@ -99,25 +110,73 @@ function LiveActivity({ incidentId }: { incidentId: string }) {
 }
 
 function Detail({ incident }: { incident: Incident }) {
-  const actionLabel = incident.decision === 'fix_pr' ? 'Open draft PR' : incident.decision === 'rollback' ? 'View rollback target' : 'View action';
+  const actionLabel = incident.decision === 'fix_pr' ? 'Open pull request' : incident.decision === 'rollback' ? 'View rollback target' : 'View action';
+  const detected = incident.events.find(event => event.type === 'detected');
+  const decision = incident.events.find(event => event.type === 'decision');
   return <main className="detail">
     <div className="detail-heading">
       <div><p className="eyebrow">Incident {incident.id}</p><h1>{kindLabels[incident.kind]}</h1><p className="muted">Detected {formatDate(incident.detectedAt)} · {incident.projectId}</p></div>
       <StatusPill status={incident.status} />
     </div>
+    <section className="trigger" aria-label="What triggered this incident">
+      <div>
+        <span className="eyebrow">What triggered this</span>
+        <h2>{detected?.message ?? incident.evidence[0] ?? 'The controller recorded a failure.'}</h2>
+        <p>{incident.probePath ? `Probe ${incident.probePath}` : 'Deployment status check'}{incident.deploymentUrl ? ` on ${hostOf(incident.deploymentUrl)}` : ''}.</p>
+      </div>
+      <ul>
+        {incident.evidence.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+        {decision && <li>{decision.message}</li>}
+      </ul>
+    </section>
     <section className="signal-grid" aria-label="Incident summary">
       <div><span>Decision</span><strong>{incident.decision ? decisionLabels[incident.decision] : 'Pending'}</strong></div>
-      <div><span>Revision</span><strong className="mono">{shortSha(incident.commitSha)}</strong></div>
+      <div><span>Revision</span><strong className="mono">{incident.commitSha ?? '—'}</strong></div>
       <div><span>Probe route</span><strong className="mono">{incident.probePath ?? 'Build status'}</strong></div>
+      <div><span>Production host</span><strong className="mono">{hostOf(incident.deploymentUrl)}</strong></div>
+      <div><span>Previous host</span><strong className="mono">{hostOf(incident.previousDeploymentUrl)}</strong></div>
+      <div><span>Timeline</span><strong>{incident.events.length} events</strong></div>
     </section>
     <section className="action-banner">
-      <div><span className="eyebrow">Current action</span><h2>{incident.decision ? decisionLabels[incident.decision] : 'Investigation in progress'}</h2><p>{incident.status === 'recovered' ? 'Production recovery was verified after the guarded action.' : incident.status === 'pr_opened' ? 'A draft PR is ready for human review. Production has not been changed.' : incident.status === 'needs_human' ? 'Automatic work stopped because the evidence was not safe to act on.' : 'The controller is collecting evidence before taking action.'}</p></div>
+      <div><span className="eyebrow">Current action</span><h2>{incident.decision ? decisionLabels[incident.decision] : 'Investigation in progress'}</h2><p>{incident.status === 'recovered' ? 'Production recovery was verified after the guarded action.' : incident.status === 'pr_opened' ? 'A pull request is open for review. Nothing has been merged.' : incident.status === 'needs_human' ? 'Automatic work stopped because the evidence was not safe to act on.' : 'The controller is collecting evidence before taking action.'}</p></div>
       {incident.actionUrl && <a className="action-link" href={incident.actionUrl} target="_blank" rel="noreferrer">{actionLabel}<span aria-hidden="true">↗</span></a>}
     </section>
     {incident.decision === 'rollback' && <p className="caveat">{rollbackCaveat}</p>}
-    <div className="detail-columns"><Evidence incident={incident} /><Timeline events={incident.events} /></div>
     <LiveActivity incidentId={incident.id} />
+    <div className="detail-columns"><Evidence incident={incident} /><Timeline events={incident.events} /></div>
   </main>;
+}
+
+function LiveWatch() {
+  const [clock, setClock] = useState(() => new Date());
+  const [watch, setWatch] = useState<{ checkedAt: string | null; outcome: string; detail: string; probePath: string; intervalMs: number } | null>(null);
+  useEffect(() => {
+    const timer = setInterval(() => setClock(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    if (mode === 'fixtures') return;
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function poll() {
+      try {
+        const response = await fetch('/api/watch', { headers: { Accept: 'application/json' }, cache: 'no-store', signal: abort.signal });
+        if (response.ok) setWatch(await response.json());
+      } catch { /* the next tick retries */ }
+      if (!abort.signal.aborted) timer = setTimeout(poll, 2000);
+    }
+    void poll();
+    return () => { abort.abort(); clearTimeout(timer); };
+  }, []);
+  const checked = watch?.checkedAt ? new Date(watch.checkedAt) : null;
+  const age = checked ? Math.max(0, Math.round((clock.getTime() - checked.getTime()) / 1000)) : null;
+  const time = clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return <div className={`live-watch ${watch?.outcome ?? 'starting'}`} aria-live="polite">
+    <strong className="live-clock">{time}</strong>
+    {mode === 'fixtures'
+      ? <span>Rehearsal data · local clock only</span>
+      : <span>{watch?.probePath ?? '/api/tasks'} · {watch?.outcome ?? 'starting'}{age !== null ? ` · checked ${age}s ago` : ''}</span>}
+  </div>;
 }
 
 export default function App() {
@@ -128,7 +187,7 @@ export default function App() {
   const counts = useMemo(() => ({ active: snapshot.incidents.filter(item => !['recovered', 'needs_human', 'pr_opened'].includes(item.status)).length, recovered: snapshot.incidents.filter(item => item.status === 'recovered').length }), [snapshot.incidents]);
 
   return <div className="app-shell">
-    <header className="topbar"><div className="brand"><span className="brand-mark" aria-hidden="true">✳</span><span>Nexathon <em>incident desk</em></span></div><div className="topbar-meta"><span className={`mode-dot ${mode}`} />{mode === 'fixtures' ? 'Rehearsal data' : 'Local controller'}<button className="refresh" onClick={() => setRefresh(value => value + 1)} type="button">Refresh</button></div></header>
+    <header className="topbar"><div className="brand"><span className="brand-mark" aria-hidden="true">✳</span><span>Keel <em>deploy watch</em></span></div><div className="topbar-meta"><LiveWatch /><span className={`mode-dot ${mode}`} />{mode === 'fixtures' ? 'Rehearsal data' : 'Live controller'}<button className="refresh" onClick={() => setRefresh(value => value + 1)} type="button">Refresh</button></div></header>
     <div className="workspace">
       <aside className="sidebar"><div className="sidebar-heading"><div><p className="eyebrow">Operations</p><h2>Incidents</h2></div><span className="count">{snapshot.incidents.length}</span></div><div className="sidebar-stats"><span><strong>{counts.active}</strong> active</span><span><strong>{counts.recovered}</strong> recovered</span></div>
         {snapshot.loading && <p className="state-message">Loading incident evidence…</p>}

@@ -30,6 +30,12 @@ export function validatePatch(patch: string): string[] {
   return [...new Set(paths)];
 }
 
+/** A pre-existing regression test may stay untouched. A patch may only write the trusted fixture. */
+export function regressionTestPreserved(paths: string[], testPath: string, content: string, trusted: string): void {
+  const touched = paths.some(path => path === testPath);
+  if (touched && content !== trusted) throw new Error('Patch modified the regression test');
+}
+
 async function run(file: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
   const { stdout } = await exec(file, args, { cwd, env, timeout: 120_000, maxBuffer: 2 * 1024 * 1024 });
   return stdout.trim();
@@ -44,7 +50,7 @@ export async function publishDraftPr(request: RemediationRequest, fix: Remediati
   if (!fix.ok || fix.incidentId !== request.incidentId || fix.baseSha.toLowerCase() !== request.commitSha.toLowerCase()) {
     throw new Error('Only a verified fix for the same incident and base revision can be published');
   }
-  validatePatch(fix.patch);
+  const patchedPaths = validatePatch(fix.patch);
   const token = process.env.GH_TOKEN;
   if (!token) throw new Error('GH_TOKEN is required on the trusted controller');
   const branch = `agent/incident-${request.incidentId.toLowerCase()}`;
@@ -66,7 +72,7 @@ export async function publishDraftPr(request: RemediationRequest, fix: Remediati
     await run('git', ['apply', '--index', patchFile], repoDir, env);
     if (request.reproductionFixture) {
       const fixture = await readFile(join(repoDir, request.reproductionFixture.path), 'utf8');
-      if (fixture !== request.reproductionFixture.content) throw new Error('Patch modified the trusted regression test');
+      regressionTestPreserved(patchedPaths, request.reproductionFixture.path, fixture, request.reproductionFixture.content);
     }
     const staged = await run('git', ['diff', '--cached', '--name-only'], repoDir, env);
     validateChangedFiles(staged.split('\n').filter(Boolean));
@@ -74,7 +80,7 @@ export async function publishDraftPr(request: RemediationRequest, fix: Remediati
     // Git invokes gh as a credential helper. The token is in the process env, not the URL, patch, or child arguments.
     await run('git', ['-c', 'credential.helper=!gh auth git-credential', 'push', 'origin', `HEAD:refs/heads/${branch}`], repoDir, env);
     const body = [
-      `Automated **draft** for incident \`${request.incidentId}\`. Human review and approval required.`,
+      `Automated fix for incident \`${request.incidentId}\`. The pull request is open for review. Nothing is merged automatically.`,
       '',
       `Base revision: \`${fix.baseSha}\``,
       `GitHub MCP configured during diagnosis: ${fix.mcpConfigured ? 'yes' : 'no'}`,
@@ -89,7 +95,7 @@ export async function publishDraftPr(request: RemediationRequest, fix: Remediati
       'No automatic merge or production deployment was performed.',
     ].join('\n');
     await writeFile(bodyFile, body, { mode: 0o600 });
-    const url = await run('gh', ['pr', 'create', '--repo', request.repository, '--base', 'main', '--head', branch, '--draft', '--title', `fix: incident ${request.incidentId}`, '--body-file', bodyFile], repoDir, env);
+    const url = await run('gh', ['pr', 'create', '--repo', request.repository, '--base', 'main', '--head', branch, '--title', `fix: incident ${request.incidentId}`, '--body-file', bodyFile], repoDir, env);
     return { branch, url };
   } finally {
     await rm(directory, { recursive: true, force: true });

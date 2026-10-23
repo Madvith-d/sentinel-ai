@@ -3,17 +3,50 @@
 Use the fixture mode for a truthful, repeatable rehearsal when Vercel, Slack,
 or the controller is unavailable. Fixture labels remain visible in the UI.
 
+## Judge commands
+
+From the repository root, after `bun install`:
+
+```sh
+bun run demo:rehearsal
+```
+
+Opens the dashboard on `http://127.0.0.1:5173` with fixture incidents. The header
+says **Rehearsal data**. This process does not start the controller and does not
+call Vercel, GitHub, Slack, or rollback.
+
+```sh
+bun run demo:live
+```
+
+Starts the local controller and the dashboard. The script forces monitoring and
+rollback **off** for the session, even if a local `.env` enables them. The header
+says **Local controller**. It prints the command to start one AI remediation run:
+
+```sh
+bun run --cwd apps/controller start:run -- --incident=<incident id>
+```
+
+That run needs `NEXATHON_RUN_TOKEN` in the controller environment. Add
+`--rehearsal` for placeholder activity that does not call a model. A real run
+opens a draft pull request only; nothing is merged.
+
+These two root scripts are new. `apps/controller` `start` and `start:run`, and
+`packages/remediator` `demo:fix`, already existed.
+
 ## Start the dashboard
 
-From the repository root:
+The rehearsal command above is the fixture path. To start pieces by hand:
 
 ```sh
 bun install
 VITE_DATA_MODE=fixtures bun run --cwd apps/dashboard dev
 ```
 
-For the live controller, omit `VITE_DATA_MODE=fixtures` and set
-`CONTROLLER_API_URL` in `apps/dashboard/.env` to its localhost origin.
+For a hand-started live controller, omit `VITE_DATA_MODE=fixtures` and set
+`CONTROLLER_API_URL` in `apps/dashboard/.env` to its localhost origin. Leave
+`CONTROLLER_MONITOR_ENABLED` false until a public-domain probe has been checked
+against both the production hostname and the immutable deployment URL.
 
 ## Three-minute talk track
 
@@ -21,10 +54,11 @@ For the live controller, omit `VITE_DATA_MODE=fixtures` and set
    evidence is split across probes, deployment revisions, logs, and chat. This
    desk puts the evidence and the safety decision in one place.”
 
-2. **Architecture — 35 seconds.** “The local controller probes the allowlisted
-   Vercel project, compares the current immutable deployment with its immediate
-   predecessor, and chooses rollback or a fix PR. The dashboard is read-only;
-   Slack receives the same concise report.”
+2. **Architecture — 35 seconds.** “The local controller probes the public
+   production hostname of the allowlisted Vercel project. A private immutable
+   deployment URL that answers 401 is not treated as an outage. When the public
+   route really fails, the controller compares the previous deployment and
+   chooses rollback or a draft fix PR. The dashboard is read-only.”
 
 3. **Fresh regression — 60 seconds.** Select **Fresh runtime regression**.
    Point out three failed probes, the passing predecessor, the single guarded

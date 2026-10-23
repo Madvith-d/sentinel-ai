@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { generateFixInE2B, publishDraftPr, type ProviderConfig, type RemediationRequest } from '@nexathon/remediator';
 import { notifyIncident, redact, type Incident } from '@nexathon/notifier';
+import type { ActivityHub } from './activity';
 import type { MonitorActions, RemediationOutcome } from './monitor';
 
 export interface RemediationConfig {
@@ -18,7 +19,7 @@ export interface ControllerActionsConfig {
   remediation?: RemediationConfig;
 }
 
-async function runRemediation(incident: Incident, config: RemediationConfig): Promise<RemediationOutcome> {
+async function runRemediation(incident: Incident, config: RemediationConfig, hub?: ActivityHub): Promise<RemediationOutcome> {
   if (!incident.commitSha) return { ok: false, message: 'Incident has no commit SHA; remediation was not started.' };
 
   let reproductionFixture: RemediationRequest['reproductionFixture'];
@@ -45,9 +46,14 @@ async function runRemediation(incident: Incident, config: RemediationConfig): Pr
     ...(reproductionFixture ? { reproductionFixture } : {}),
   };
 
+  const run = hub?.create({ incidentId: incident.id, source: 'ai' });
+  if (run) hub?.markRunning(run.id);
   try {
-    const fix = await generateFixInE2B(request, config.provider);
+    const fix = await generateFixInE2B(request, config.provider, {
+      onEvent: activity => { if (run) hub?.append(run.id, activity); },
+    });
     if (!fix.ok) {
+      if (run) hub?.finish(run.id, 'failed', fix.message);
       return {
         ok: false,
         message: `Remediation stopped safely: ${fix.message}`,
@@ -55,23 +61,28 @@ async function runRemediation(incident: Incident, config: RemediationConfig): Pr
       };
     }
     const draftPr = await publishDraftPr(request, fix);
+    if (run) hub?.finish(run.id, 'completed', 'Open pull request published.');
     return {
       ok: true,
       actionUrl: draftPr.url,
-      message: 'Verified patch published as a draft PR for human review.',
+      message: 'Verified patch published as an open pull request for review.',
       evidence: ['Reproduction failed before patching; targeted tests and build passed afterward.'],
     };
   } catch (error) {
+    if (run) hub?.finish(run.id, 'failed', 'Remediation failed before a pull request was opened.');
     return { ok: false, message: 'Remediation failed safely; no PR was created.', evidence: [redact(String(error))] };
   }
 }
 
-export function createControllerActions(config: ControllerActionsConfig): MonitorActions {
+export function createControllerActions(config: ControllerActionsConfig, hub?: ActivityHub): MonitorActions {
   return {
     notify: async incident => {
       const result = await notifyIncident(incident, { webhookUrl: config.slackWebhookUrl });
-      return result.ok ? { ok: true, message: 'Slack notification sent.' } : { ok: false, message: result.message };
+      const sentByEmail = Boolean(process.env.SMTP_HOST && process.env.SMTP_FROM && process.env.SMTP_TO);
+      return result.ok
+        ? { ok: true, message: sentByEmail ? 'Email notification sent.' : 'Slack notification sent.' }
+        : { ok: false, message: result.message };
     },
-    ...(config.remediation ? { remediate: incident => runRemediation(incident, config.remediation!) } : {}),
+    ...(config.remediation ? { remediate: incident => runRemediation(incident, config.remediation!, hub) } : {}),
   };
 }

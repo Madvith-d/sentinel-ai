@@ -52,6 +52,7 @@ function provider(overrides: Partial<DeploymentProvider> = {}) {
       return { actionUrl: previous.immutableUrl };
     },
     async probeProduction() {
+      if (calls.rollback === 0) return probe('fail');
       return probe('pass');
     },
     ...overrides,
@@ -102,6 +103,24 @@ describe('monitor safety boundaries', () => {
     });
     const result = await checkProject(makeOptions(implementation));
     expect(result.action).toBe('unavailable');
+  });
+
+  it('ignores a protected immutable deployment URL when the public production probe passes', async () => {
+    let immutableProbes = 0;
+    const { implementation, calls } = provider({
+      async probeImmutableDeployment() {
+        immutableProbes += 1;
+        return { result: 'unknown', evidence: 'HTTP 401 from current-abc123.vercel.app/api/tasks' };
+      },
+      async probeProduction() {
+        return { result: 'pass', evidence: 'HTTP 200 from demo.example.com/api/tasks' };
+      },
+    });
+    const result = await checkProject(makeOptions(implementation));
+    expect(result.action).toBe('monitor');
+    if (result.action === 'monitor') expect(result.consecutiveFailures).toBe(0);
+    expect(immutableProbes).toBe(0);
+    expect(calls.rollback).toBe(0);
   });
 
   it('reports the monitor unavailable when production resolution fails', async () => {

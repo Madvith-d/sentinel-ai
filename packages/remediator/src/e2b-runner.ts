@@ -76,12 +76,18 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
     const setup = await command(sandbox, `export PATH="$HOME/.bun/bin:$PATH"; ${request.setupCommand}`, 180_000, REPO_DIR);
     if (setup.exitCode !== 0) return failure(request, 'setup_failed', 'Project dependency setup failed', redacted(setup.stderr || setup.stdout, provider));
 
+    let protectedTest: string | undefined;
     if (request.reproductionFixture) {
       const destination = `${REPO_DIR}/${request.reproductionFixture.path}`;
       const existing = await command(sandbox, `test -e ${shellQuote(destination)}`, 10_000);
-      if (existing.exitCode === 0) return failure(request, 'unsafe_patch', 'Fixture path already exists at the incident SHA');
-      await command(sandbox, `mkdir -p ${shellQuote(destination.slice(0, destination.lastIndexOf('/')))}`, 10_000);
-      await sandbox.files.write(destination, request.reproductionFixture.content);
+      if (existing.exitCode === 0) {
+        protectedTest = await sandbox.files.read(destination);
+        await emit('reproduction', 'status', 'Using the regression test already committed at this revision');
+      } else {
+        await command(sandbox, `mkdir -p ${shellQuote(destination.slice(0, destination.lastIndexOf('/')))}`, 10_000);
+        await sandbox.files.write(destination, request.reproductionFixture.content);
+        protectedTest = request.reproductionFixture.content;
+      }
     }
     await emit('reproduction', 'stage', 'Checking that the incident reproduces before a patch');
     const baseline = await command(sandbox, `export PATH="$HOME/.bun/bin:$PATH"; ${request.reproduceCommand}`, 120_000, REPO_DIR);
@@ -107,9 +113,9 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
       });
     parser.finish();
     if (agent.exitCode !== 0) return failure(request, 'agent_failed', 'Supercharge failed before a verified patch was available', redacted(agent.stderr || agent.stdout, provider));
-    if (request.reproductionFixture) {
+    if (request.reproductionFixture && protectedTest !== undefined) {
       const current = await sandbox.files.read(`${REPO_DIR}/${request.reproductionFixture.path}`);
-      if (current !== request.reproductionFixture.content) return failure(request, 'unsafe_patch', 'Agent modified the trusted regression test');
+      if (current !== protectedTest) return failure(request, 'unsafe_patch', 'Agent modified the regression test');
     }
 
     const changed = await checked(sandbox,

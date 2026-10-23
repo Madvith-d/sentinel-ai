@@ -12,7 +12,7 @@ export interface Deployment {
 }
 
 export interface ProbeResponse {
-  result: 'pass' | 'fail';
+  result: 'pass' | 'fail' | 'unknown';
   evidence: string;
 }
 
@@ -248,8 +248,9 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
   let current: Deployment | null;
   try {
     current = await options.provider.getProductionDeployment(options.projectId);
-  } catch {
-    return { action: 'unavailable', reason: 'Could not resolve the current production deployment.' };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'unknown error';
+    return { action: 'unavailable', reason: `Could not resolve the current production deployment. ${detail}` };
   }
   if (!current) return { action: 'unavailable', reason: 'No current production deployment is available.' };
 
@@ -259,7 +260,9 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
   let currentProbe: ProbeResult = 'unknown';
   let currentEvidence = 'Probe did not return a result.';
   try {
-    const result = await options.provider.probeImmutableDeployment(currentUrl, probePath);
+    // Judge health on the public production hostname. Immutable *.vercel.app
+    // URLs can return 401 from Deployment Protection while the public alias is healthy.
+    const result = await options.provider.probeProduction(options.projectId, probePath);
     currentProbe = result.result;
     currentEvidence = evidence(result.evidence);
   } catch {
@@ -298,11 +301,39 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
       options.store.save(existing);
       updated = true;
     }
+    const fixAttempts = existing.events.filter(item => item.type === 'remediation_started').length;
+    const fixStoppedEarly = existing.status === 'needs_human' && !existing.actionUrl && fixAttempts < 3;
+    if (fixStoppedEarly && options.actions?.remediate) {
+      const protectedPredecessor = existing.evidence.some(line => /predecessor probe \(unknown\): HTTP 40[13]/.test(line));
+      if (protectedPredecessor && existing.deploymentId && options.allowlistedProjectIds.has(existing.projectId)
+        && options.store.claimRollback(existing.deploymentId, now().toISOString())) {
+        try {
+          const previous = await options.provider.getPreviousDeployment(existing.projectId, existing.deploymentId);
+          if (previous) {
+            existing.status = 'rolling_back';
+            existing.events.push(event(now().toISOString(), 'rollback_started', 'Restoring the previous deployment. Its URL is protected, so the app probe could not read it.'));
+            options.store.save(existing);
+            const rollback = await options.provider.rollbackProductionTo(existing.projectId, previous.id);
+            existing.events.push(event(now().toISOString(), 'rollback_completed', `Production alias moved to the previous deployment: ${rollback.actionUrl}`));
+            const verification = await options.provider.probeProduction(existing.projectId, existing.probePath ?? '/api/tasks');
+            existing.events.push(event(now().toISOString(), 'verification', `Production recovery check: ${verification.evidence}`));
+            if (verification.result === 'pass') existing.evidence.push('Production was restored to the previous deployment before the fix.');
+          }
+        } catch {
+          existing.events.push(event(now().toISOString(), 'escalation', 'Rollback to the protected predecessor did not complete. The fix will still be attempted.'));
+        }
+      }
+      existing.events.push(event(now().toISOString(), 'remediation_retry', 'Retrying the fix. The previous attempt stopped before a pull request.'));
+      options.store.save(existing);
+      await finishRemediation(existing, options);
+      return { action: 'incident', incident: existing, duplicate: true, updated: true };
+    }
     return { action: 'incident', incident: existing, duplicate: true, updated };
   }
 
   let previous: Deployment | null = null;
   let previousProbe: ProbeResult = 'unknown';
+  let previousProtected = false;
   let previousEvidence = 'Predecessor probe was not completed.';
   try {
     previous = await options.provider.getPreviousDeployment(options.projectId, current.id);
@@ -312,6 +343,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
         const result = await options.provider.probeImmutableDeployment(previousUrl, probePath);
         previousProbe = result.result;
         previousEvidence = evidence(result.evidence);
+        previousProtected = result.result === 'unknown' && /HTTP 40[13]/.test(result.evidence);
       } else {
         previousEvidence = 'Provider returned an invalid predecessor deployment URL.';
       }
@@ -352,6 +384,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
     previousDeploymentId: previous?.id,
     previousProbePath: previous ? probePath : undefined,
     previousProbe,
+    previousProtected,
     evidenceConsistent: currentProbe === 'fail',
     rollbackAlreadyAttempted: false,
   });
@@ -424,6 +457,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
 
   if (recovered) {
     incident.status = 'recovered';
+    incident.evidence.push('The failing commit was removed from production by restoring the previous deployment.');
     incident.events.push(event(now().toISOString(), 'verification', `Production recovery verified: ${verificationEvidence}`));
   } else {
     incident.status = 'needs_human';
@@ -431,6 +465,10 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
     incident.evidence.push(evidence(`Rollback recovery verification failed: ${verificationEvidence}`));
     incident.events.push(event(now().toISOString(), 'escalation', 'Recovery was not verified; no additional rollback will be attempted.'));
   }
-  await saveAndNotify(incident, options);
+  if (options.actions?.remediate) {
+    await finishRemediation(incident, options);
+  } else {
+    await saveAndNotify(incident, options);
+  }
   return { action: 'incident', incident };
 }

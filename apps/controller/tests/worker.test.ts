@@ -73,4 +73,30 @@ describe('startPollingWorker', () => {
     expect(deploymentStatusChecks).toBe(1);
     await worker.stop();
   });
+
+  it('keeps provider methods on polls that skip deployment status', async () => {
+    store = new IncidentStore(':memory:');
+    let runtimeChecks = 0;
+    class Provider {
+      async getProductionDeployment() {
+        runtimeChecks += 1;
+        return { id: 'deployment', immutableUrl: 'https://healthy-demo.vercel.app', createdAt: new Date().toISOString() };
+      }
+      async getLatestDeploymentStatus() {
+        return { id: 'deployment', state: 'READY' as const, createdAt: new Date().toISOString() };
+      }
+      async getPreviousDeployment() { return null; }
+      async probeImmutableDeployment() { return { result: 'pass' as const, evidence: 'HTTP 200' }; }
+      async rollbackProductionTo(): Promise<{ actionUrl?: string }> { throw new Error('Should not roll back a healthy project.'); }
+      async probeProduction() { return { result: 'pass' as const, evidence: 'HTTP 200' }; }
+    }
+    const worker = startPollingWorker({
+      projectIds: ['project-a'], allowlistedProjectIds: new Set(['project-a']), probePath: '/api/tasks',
+      provider: new Provider(), store, intervalMs: 300_000, deploymentStatusIntervalMs: 60_000, startImmediately: false,
+    });
+    await worker.pollNow();
+    await worker.pollNow();
+    expect(runtimeChecks).toBe(2);
+    await worker.stop();
+  });
 });

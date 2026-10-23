@@ -226,9 +226,13 @@ export class VercelProvider implements DeploymentProvider {
         signal: AbortSignal.timeout(this.timeoutMs),
         headers: { Accept: 'application/json' },
       });
+      const status = response.status;
+      // Deployment Protection answers 401/403 on private immutable URLs. That is
+      // not an application failure and must not open an incident or a fix PR.
+      const result = response.ok ? 'pass' : status === 401 || status === 403 ? 'unknown' : 'fail';
       return {
-        result: response.ok ? 'pass' : 'fail',
-        evidence: `HTTP ${response.status} from ${url.hostname}${url.pathname}`,
+        result,
+        evidence: `HTTP ${status} from ${url.hostname}${url.pathname}`,
       };
     } catch {
       throw new Error('Deployment probe failed or timed out.');

@@ -99,9 +99,8 @@ if (remediationFlag === 'true') {
     },
   };
 }
-const actions = createControllerActions({ slackWebhookUrl: process.env.SLACK_WEBHOOK_URL, remediation });
-
 const hub = new ActivityHub();
+const actions = createControllerActions({ slackWebhookUrl: process.env.SLACK_WEBHOOK_URL, remediation }, hub);
 const incidentApi = createIncidentApi(store);
 const activityApi = createActivityApi({
   hub,
@@ -110,10 +109,26 @@ const activityApi = createActivityApi({
   token: process.env.NEXATHON_RUN_TOKEN,
   aiConfigured: Boolean(remediation),
 });
+const watch = {
+  checkedAt: null as string | null,
+  outcome: 'starting' as 'starting' | 'healthy' | 'failing' | 'incident' | 'unavailable',
+  detail: 'Waiting for the first production check.',
+  probePath: monitorConfig?.probePath ?? '/api/tasks',
+  rollbackEnabled: Boolean(monitorConfig?.rollbackEnabled),
+  intervalMs: monitorConfig?.pollIntervalMs ?? 30_000,
+};
+
 const server = Bun.serve({
   hostname: host,
   port,
-  fetch: async (request, bunServer) => (await activityApi(request, bunServer)) ?? incidentApi(request),
+  fetch: async (request, bunServer) => {
+    const url = new URL(request.url);
+    if (url.pathname === '/api/watch') {
+      if (request.method !== 'GET') return Response.json({ error: 'Method not allowed.' }, { status: 405 });
+      return Response.json({ ...watch, now: new Date().toISOString() });
+    }
+    return (await activityApi(request, bunServer)) ?? incidentApi(request);
+  },
 });
 console.log(`Incident API listening on http://${server.hostname}:${server.port}`);
 if (!process.env.NEXATHON_RUN_TOKEN) {
@@ -133,13 +148,28 @@ if (monitorConfig) {
     intervalMs: config.pollIntervalMs,
     deploymentStatusIntervalMs: config.deploymentStatusIntervalMs,
     onResult: (_, result) => {
-      if (result.action === 'incident' && (!result.duplicate || result.updated)) {
-        console.info(`Incident ${result.incident.id}: ${result.incident.status}`);
-      } else if (result.action === 'unavailable') {
+      watch.checkedAt = new Date().toISOString();
+      if (result.action === 'monitor') {
+        watch.outcome = result.consecutiveFailures > 0 ? 'failing' : 'healthy';
+        watch.detail = result.reason;
+      } else if (result.action === 'incident') {
+        watch.outcome = 'incident';
+        watch.detail = `${result.incident.status}: ${result.incident.evidence[0] ?? 'Incident recorded.'}`;
+      } else {
+        watch.outcome = 'unavailable';
+        watch.detail = result.reason;
         console.error(`Controller monitor unavailable: ${result.reason}`);
       }
+      if (result.action === 'incident' && (!result.duplicate || result.updated)) {
+        console.info(`Incident ${result.incident.id}: ${result.incident.status}`);
+      }
     },
-    onError: () => console.error('Controller monitor cycle failed.'),
+    onError: () => {
+      watch.checkedAt = new Date().toISOString();
+      watch.outcome = 'unavailable';
+      watch.detail = 'The production check failed before a result was recorded.';
+      console.error('Controller monitor cycle failed.');
+    },
   });
   console.info(`Monitoring enabled for configured Vercel project ${config.projectId}; rollback ${config.rollbackEnabled ? 'enabled' : 'disabled'}.`);
 }

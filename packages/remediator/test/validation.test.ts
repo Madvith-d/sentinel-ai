@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { remediationPrompt, superchargeConfig } from '../src/prompt.ts';
-import { validatePatch } from '../src/pr-publisher.ts';
+import { regressionTestPreserved, validatePatch } from '../src/pr-publisher.ts';
 import { validateChangedFiles, validateRequest } from '../src/validation.ts';
 import type { ProviderConfig, RemediationRequest } from '../src/types.ts';
 
@@ -18,6 +18,33 @@ const provider: ProviderConfig = {
   modelName: 'demo', modelId: 'model-id', baseUrl: 'https://model.example/v1',
   apiBackend: 'responses', apiKey: 'dedicated-secret', githubReadToken: 'read-only-token',
 };
+
+describe('regression test guard', () => {
+  test('allows a pre-existing test the patch does not touch', () => {
+    expect(() => regressionTestPreserved(
+      ['src/app/api/tasks/route.ts'],
+      'src/tests/filter.repro.test.ts',
+      'existing test',
+      'trusted fixture',
+    )).not.toThrow();
+  });
+  test('rejects a patch that rewrites the regression test', () => {
+    expect(() => regressionTestPreserved(
+      ['src/tests/filter.repro.test.ts'],
+      'src/tests/filter.repro.test.ts',
+      'weakened test',
+      'trusted fixture',
+    )).toThrow('regression test');
+  });
+  test('allows a patch that adds the trusted fixture unchanged', () => {
+    expect(() => regressionTestPreserved(
+      ['src/tests/filter.repro.test.ts'],
+      'src/tests/filter.repro.test.ts',
+      'trusted fixture',
+      'trusted fixture',
+    )).not.toThrow();
+  });
+});
 
 describe('controller boundary', () => {
   test('accepts exact repository and full SHA', () => expect(() => validateRequest(request)).not.toThrow());

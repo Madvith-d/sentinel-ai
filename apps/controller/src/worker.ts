@@ -39,9 +39,17 @@ export function startPollingWorker(options: PollingWorkerOptions): PollingWorker
           const statusDue = !lastDeploymentStatusAt.has(projectId)
             || now - lastDeploymentStatusAt.get(projectId)! >= deploymentStatusIntervalMs;
           if (statusDue) lastDeploymentStatusAt.set(projectId, now);
+          // A class instance loses its methods when copied. Hide the status
+          // method without copying the provider.
           const provider = statusDue || !options.provider.getLatestDeploymentStatus
             ? options.provider
-            : { ...options.provider, getLatestDeploymentStatus: undefined };
+            : new Proxy(options.provider, {
+              get(target, property, receiver) {
+                if (property === 'getLatestDeploymentStatus') return undefined;
+                const value = Reflect.get(target, property, receiver);
+                return typeof value === 'function' ? value.bind(target) : value;
+              },
+            });
           result = await checkProject({ ...options, provider, projectId });
         } catch {
           try { await options.onError?.(projectId); } catch { /* keep other projects polling */ }

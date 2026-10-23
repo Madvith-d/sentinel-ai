@@ -12,6 +12,8 @@ export interface IncidentAssessment {
   previousDeploymentId?: string;
   previousProbePath?: string;
   previousProbe?: ProbeResult;
+  /** Immutable deployment URL returned 401/403. That is protection, not an app failure. */
+  previousProtected?: boolean;
   evidenceConsistent: boolean;
   rollbackAlreadyAttempted: boolean;
 }
@@ -73,14 +75,15 @@ export function decideIncident(assessment: IncidentAssessment): IncidentDecision
     };
   }
 
-  if (!assessment.previousDeploymentId || !assessment.previousProbe || assessment.previousProbe === 'unknown') {
+  if (!assessment.previousDeploymentId || !assessment.previousProbe
+    || (assessment.previousProbe === 'unknown' && !assessment.previousProtected)) {
     return {
       action: 'escalate',
       reason: 'A trustworthy predecessor and its same-route probe result are required.',
     };
   }
 
-  if (assessment.previousProbe === 'pass') {
+  if (assessment.previousProbe === 'pass' || assessment.previousProtected) {
     if (assessment.rollbackAlreadyAttempted) {
       return {
         action: 'escalate',
@@ -90,7 +93,9 @@ export function decideIncident(assessment: IncidentAssessment): IncidentDecision
 
     return {
       action: 'rollback',
-      reason: 'The current production deployment fails while its predecessor passes.',
+      reason: assessment.previousProtected
+        ? 'The current production route fails. The previous deployment URL is protected, so production is restored to that deployment before the fix.'
+        : 'The current production deployment fails while its predecessor passes.',
     };
   }
 

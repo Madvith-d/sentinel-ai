@@ -39,6 +39,7 @@ function provider(options: {
       return { actionUrl: previous.immutableUrl };
     },
     async probeProduction() {
+      if (calls.rollback === 0) return response('fail', 'HTTP 500 api_key=top-secret');
       calls.recoveryProbes += 1;
       return response(options.recoveryResult ?? 'pass');
     },
@@ -128,11 +129,36 @@ describe('checkProject', () => {
     expect(fake.calls.recoveryProbes).toBe(1);
     expect(fake.calls.paths.every(path => path === '/api/tasks')).toBe(true);
 
-    const duplicate = await checkProject(options);
-    expect(duplicate.action).toBe('incident');
-    if (duplicate.action !== 'incident') throw new Error('Expected a duplicate incident result.');
-    expect(duplicate.duplicate).toBe(true);
+    const afterRecovery = await checkProject(options);
+    expect(afterRecovery.action).toBe('monitor');
     expect(fake.calls.rollback).toBe(1);
+  });
+
+  it('restores the previous deployment, then opens one draft PR for the failing commit', async () => {
+    const fake = provider();
+    let fixes = 0;
+    const options = {
+      ...monitorOptions(fake.implementation),
+      actions: {
+        remediate: async () => {
+          fixes += 1;
+          return { ok: true as const, actionUrl: 'https://github.com/example/testsite/pull/9', message: 'Draft PR opened for the failing commit.' };
+        },
+      },
+    };
+
+    await checkProject(options);
+    await checkProject(options);
+    const result = await checkProject(options);
+
+    expect(result.action).toBe('incident');
+    if (result.action !== 'incident') throw new Error('Expected an incident result.');
+    expect(fake.calls.rollback).toBe(1);
+    expect(fixes).toBe(1);
+    expect(result.incident.status).toBe('pr_opened');
+    expect(result.incident.actionUrl).toBe('https://github.com/example/testsite/pull/9');
+    expect(result.incident.events.map(event => event.type)).toEqual(expect.arrayContaining(['rollback_completed', 'verification', 'draft_pr']));
+    expect(result.incident.evidence.join(' ')).toContain('previous deployment');
   });
 
   it('does not roll back when the predecessor has the same failure', async () => {

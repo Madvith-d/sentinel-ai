@@ -1,5 +1,6 @@
 export * from './format';
 import { formatIncidentReport, type Incident, type IncidentReport } from './format';
+import { resolveSmtpConfig, sendSmtpMail, type SmtpConfig } from './smtp';
 
 export type NotificationResult =
   | { ok: true; report: IncidentReport }
@@ -7,6 +8,7 @@ export type NotificationResult =
 
 export interface NotifyOptions {
   webhookUrl?: string;
+  smtp?: SmtpConfig;
   timeoutMs?: number;
   fetch?: typeof globalThis.fetch;
 }
@@ -14,8 +16,25 @@ export interface NotifyOptions {
 export async function notifyIncident(incident: Incident, options: NotifyOptions = {}): Promise<NotificationResult> {
   const report = formatIncidentReport(incident);
   const failure = (reason: Extract<NotificationResult, { ok: false }>['reason'], message: string): NotificationResult => ({ ok: false, reason, message, report });
+  let smtp = options.smtp;
+  if (!smtp) {
+    try { smtp = resolveSmtpConfig(process.env, options.timeoutMs); }
+    catch (error) { return failure('invalid_webhook', error instanceof Error ? error.message : 'SMTP configuration is invalid.'); }
+  }
+  if (smtp) {
+    try {
+      const subject = `Keel · ${incident.status} · ${incident.id}`.slice(0, 180);
+      await sendSmtpMail(smtp, subject, report.text);
+      return { ok: true, report };
+    } catch (error) {
+      const message = error instanceof Error && error.message === 'SMTP timed out.'
+        ? 'Email timed out. Recovery and PR creation must continue independently.'
+        : 'Email could not be sent. Keep the local report and record notification failure.';
+      return failure(error instanceof Error && error.message === 'SMTP timed out.' ? 'timeout' : 'network_error', message);
+    }
+  }
   const hook = options.webhookUrl ?? process.env.SLACK_WEBHOOK_URL;
-  if (!hook) return failure('not_configured', 'Slack is not configured. Keep the report locally and record notification failure.');
+  if (!hook) return failure('not_configured', 'Email is not configured. Keep the report locally and record notification failure.');
   try {
     const url = new URL(hook);
     if (url.protocol !== 'https:' || !['hooks.slack.com', 'hooks.slack-gov.com'].includes(url.hostname)

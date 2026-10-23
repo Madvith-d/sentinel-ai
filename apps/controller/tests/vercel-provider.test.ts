@@ -87,6 +87,31 @@ describe('VercelProvider', () => {
       .rejects.toThrow('Invalid immutable');
   });
 
+  it('treats deployment-protection responses as unknown and probes the public production host', async () => {
+    const calls: Array<{ url: URL }> = [];
+    const fetchMock = (async (input: RequestInfo | URL) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      calls.push({ url });
+      if (url.hostname === 'demo-current.vercel.app') return new Response('protected', { status: 401 });
+      if (url.hostname === 'demo.example.com') return new Response('ok', { status: 200 });
+      return new Response(null, { status: 500 });
+    }) as typeof fetch;
+    const provider = new VercelProvider({
+      accessToken: token,
+      projectId,
+      productionDomain: 'demo.example.com',
+      fetch: fetchMock,
+    });
+
+    const protectedProbe = await provider.probeImmutableDeployment('https://demo-current.vercel.app', '/api/tasks');
+    expect(protectedProbe.result).toBe('unknown');
+    expect(protectedProbe.evidence).toContain('HTTP 401');
+
+    const production = await provider.probeProduction(projectId, '/api/tasks');
+    expect(production.result).toBe('pass');
+    expect(calls.map(call => call.url.hostname)).toEqual(['demo-current.vercel.app', 'demo.example.com']);
+  });
+
   it('maps the newest production deployment status for build-failure detection', async () => {
     const { provider, calls } = mockProvider();
     const original = calls.length;

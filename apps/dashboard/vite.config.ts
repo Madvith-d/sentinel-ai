@@ -17,6 +17,12 @@ export default defineConfig(({ mode }) => {
       },
     },
     // Read-only views of the agent feed. The run trigger is never proxied.
+    '^/api/watch(?:\\?.*)?$': {
+      target, changeOrigin: false,
+      bypass(req: { method?: string }) {
+        if (req.method !== 'GET') return false;
+      },
+    },
     '^/api/agent/runs(?:/[a-z0-9-]+(?:/events)?)?(?:\\?.*)?$': {
       target, changeOrigin: false,
       bypass(req: { method?: string }) {
