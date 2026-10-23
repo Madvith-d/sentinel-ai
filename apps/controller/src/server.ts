@@ -165,12 +165,15 @@ const watch = {
   logs: [] as RuntimeLog[],
   logsCheckedAt: null as string | null,
   logsError: null as string | null,
+  deployment: null as { id: string; url: string; createdAt: string } | null,
 };
 
 let vercelDevice: { code: string; expiresAt: number } | undefined;
 let monitorWorker: PollingWorker | undefined;
 let logsTimer: ReturnType<typeof setInterval> | undefined;
+let deploymentWatchTimer: ReturnType<typeof setInterval> | undefined;
 let logsRefreshing = false;
+let loggedDeploymentId: string | undefined;
 
 function dashboardOrigin(): string {
   const configured = process.env.DASHBOARD_ORIGIN ?? 'http://127.0.0.1:5173';
@@ -238,6 +241,8 @@ function launchMonitor(config: MonitorConfig): void {
         const current = await config.provider.getProductionDeployment(config.projectId);
         if (!current) throw new Error('No current production deployment is available.');
         watch.logs = await config.provider.getRuntimeLogs!(config.projectId, current.id);
+        watch.deployment = { id: current.id, url: current.immutableUrl, createdAt: current.createdAt };
+        loggedDeploymentId = current.id;
         watch.logsCheckedAt = new Date().toISOString();
         watch.logsError = null;
       } catch (error) {
@@ -249,6 +254,19 @@ function launchMonitor(config: MonitorConfig): void {
     };
     void refreshLogs();
     logsTimer = setInterval(() => { void refreshLogs(); }, 60_000);
+    // The production alias can move at any moment (a new deploy promoted or a
+    // rollback). Detect the switch quickly so the logs always name the
+    // deployment that currently serves production instead of waiting a full
+    // 60-second cycle.
+    deploymentWatchTimer = setInterval(() => {
+      if (logsRefreshing || loggedDeploymentId === undefined) return;
+      void (async () => {
+        try {
+          const current = await config.provider.getProductionDeployment(config.projectId);
+          if (current && current.id !== loggedDeploymentId) await refreshLogs();
+        } catch { /* the next scheduled refresh retries */ }
+      })();
+    }, 15_000);
   }
   console.info(`Monitoring enabled for configured ${config.platform} service ${config.projectId}; rollback ${config.rollbackEnabled ? 'enabled' : 'disabled'}.`);
 }
@@ -256,6 +274,8 @@ function launchMonitor(config: MonitorConfig): void {
 async function stopMonitor(): Promise<void> {
   if (logsTimer) clearInterval(logsTimer);
   logsTimer = undefined;
+  if (deploymentWatchTimer) clearInterval(deploymentWatchTimer);
+  deploymentWatchTimer = undefined;
   await monitorWorker?.stop();
   monitorWorker = undefined;
 }

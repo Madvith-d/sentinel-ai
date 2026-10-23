@@ -34,6 +34,10 @@ function shortSha(value?: string) {
   return value ? value.slice(0, 7) : '—';
 }
 
+function shortDeployment(value?: string) {
+  return value ? value.replace(/^dpl_/, '').slice(0, 7) : '—';
+}
+
 function hostOf(value?: string) {
   if (!value) return '—';
   try { return new URL(value).host; } catch { return value; }
@@ -147,10 +151,12 @@ type WatchLog = {
 function WatchTelemetry({ watch }: { watch: WatchState | null }) {
   const probe = watch?.probe;
   const logs = watch?.logs ?? [];
+  const deployment = watch?.deployment ?? null;
+  const probeEvery = `${Math.max(1, Math.round((watch?.intervalMs ?? 30_000) / 1000))}s`;
   return <section className="panel telemetry-panel" aria-live="polite">
     <div className="section-heading">
       <h2>Production telemetry</h2>
-      <span>probe / 30s · logs / 60s</span>
+      <span>probe / {probeEvery} · logs / 60s</span>
     </div>
     <div className="telemetry-probe">
       <div>
@@ -169,7 +175,10 @@ function WatchTelemetry({ watch }: { watch: WatchState | null }) {
       </div>
     </div>
     {probe?.result === 'fail' && <p className="probe-error">{probe.evidence}</p>}
-    <div className="log-heading"><strong>Vercel runtime logs</strong><span>{watch?.logsCheckedAt ? `Updated ${formatTime(watch.logsCheckedAt)}` : 'Waiting for first log pull'}</span></div>
+    <div className="log-heading">
+      <strong>Vercel runtime logs{deployment ? <span className="mono log-deployment">{shortDeployment(deployment.id)}</span> : null}</strong>
+      <span>{watch?.logsCheckedAt ? `Updated ${formatTime(watch.logsCheckedAt)}` : 'Waiting for first log pull'}</span>
+    </div>
     {watch?.logsError && <p className="telemetry-error" role="status">{watch.logsError}</p>}
     {!watch && <p className="telemetry-empty">Live telemetry appears when the controller is running.</p>}
     {watch && !watch.logsError && logs.length === 0 && <p className="telemetry-empty">No runtime logs returned for the current deployment.</p>}
@@ -182,6 +191,17 @@ function WatchTelemetry({ watch }: { watch: WatchState | null }) {
       </li>)}
     </ol>}
   </section>;
+}
+
+function Overview({ watch }: { watch: WatchState | null }) {
+  return <main className="detail overview">
+    <div className="overview-hero">
+      <span className="empty-icon" aria-hidden="true">K</span>
+      <h1>No incident selected</h1>
+      <p>Production is quiet. The latest probe and the current production deployment&apos;s Vercel runtime logs stay visible below; when the controller records an incident, its evidence and recovery path open here.</p>
+    </div>
+    <WatchTelemetry watch={watch} />
+  </main>;
 }
 
 function Detail({ incident, watch }: { incident: Incident; watch: WatchState | null }) {
@@ -239,6 +259,7 @@ type WatchState = {
   logs: WatchLog[];
   logsCheckedAt: string | null;
   logsError: string | null;
+  deployment?: { id: string; url: string; createdAt: string } | null;
 };
 
 function checkLabel(watch: WatchState | null) {
@@ -334,7 +355,7 @@ function Dashboard() {
         {!snapshot.loading && !snapshot.error && snapshot.incidents.length === 0 && <p className="state-message">No incidents recorded yet.</p>}
         <nav className="incident-list" aria-label="Incidents">{snapshot.incidents.map(incident => <IncidentCard key={incident.id} incident={incident} selected={selected?.id === incident.id} onSelect={() => setSelectedId(incident.id)} />)}</nav>
       </aside>
-      {showSetup ? <Setup onClose={() => setShowSetup(false)} /> : selected ? <Detail incident={selected} watch={watch} /> : <main className="empty-detail"><span className="empty-icon">K</span><h1>No incident selected</h1><p>When the controller records an incident, its evidence and recovery path will appear here.</p></main>}
+      {showSetup ? <Setup onClose={() => setShowSetup(false)} /> : selected ? <Detail incident={selected} watch={watch} /> : <Overview watch={watch} />}
     </div>
   </div>;
 }

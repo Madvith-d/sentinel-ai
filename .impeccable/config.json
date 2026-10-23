@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "space grotesk",
+        "createdAt": "2026-10-23T22:36:00.829Z",
+        "reason": "Project DESIGN.md intentionally specifies Space Grotesk for dashboard headings and operational labels."
+      }
+    ]
+  }
+}
