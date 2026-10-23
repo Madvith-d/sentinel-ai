@@ -13,6 +13,11 @@ const previousDeployment = {
   url: 'demo-previous.vercel.app', createdAt: Date.parse('2026-10-23T11:00:00Z'),
   meta: { githubCommitSha: 'def5678' },
 };
+const failedDeployment = {
+  uid: 'dpl_failed', projectId, target: 'production', readyState: 'ERROR',
+  url: 'demo-failed.vercel.app', createdAt: Date.parse('2026-10-23T12:01:00Z'),
+  meta: { githubCommitSha: 'fedcba0' },
+};
 
 function mockProvider() {
   const calls: Array<{ url: URL; init: RequestInit }> = [];
@@ -26,6 +31,7 @@ function mockProvider() {
     }
     if (url.pathname === '/v13/deployments/dpl_current') return Response.json(currentDeployment);
     if (url.pathname === '/v13/deployments/dpl_previous') return Response.json(previousDeployment);
+    if (url.pathname === '/v6/deployments') return Response.json({ deployments: [currentDeployment, previousDeployment] });
     if (url.pathname === '/v7/deployments') return Response.json({ deployments: [currentDeployment, previousDeployment] });
     if (url.pathname === '/v1/projects/prj_demo/rollback/dpl_previous') return Response.json({}, { status: 201 });
     return new Response(null, { status: 404 });
@@ -75,5 +81,14 @@ describe('VercelProvider', () => {
     await expect(provider.probeImmutableDeployment('https://127.0.0.1', '/api/tasks')).rejects.toThrow('Invalid immutable');
     await expect(provider.probeImmutableDeployment('https://demo-current.vercel.app', '//attacker.example'))
       .rejects.toThrow('Invalid immutable');
+  });
+
+  it('maps the newest production deployment status for build-failure detection', async () => {
+    const { provider, calls } = mockProvider();
+    const original = calls.length;
+    const status = await provider.getLatestDeploymentStatus(projectId);
+    expect(calls.length).toBe(original + 1);
+    expect(status?.id).toBe('dpl_current');
+    expect(status?.state).toBe('READY');
   });
 });

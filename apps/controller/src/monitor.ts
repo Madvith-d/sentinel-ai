@@ -16,12 +16,35 @@ export interface ProbeResponse {
   evidence: string;
 }
 
+export type DeploymentState = 'QUEUED' | 'BUILDING' | 'READY' | 'ERROR' | 'CANCELED' | 'UNKNOWN';
+
+export interface DeploymentStatus {
+  id: string;
+  state: DeploymentState;
+  createdAt: string;
+  immutableUrl?: string;
+  commitSha?: string;
+}
+
 export interface DeploymentProvider {
   getProductionDeployment(projectId: string): Promise<Deployment | null>;
+  getLatestDeploymentStatus?(projectId: string): Promise<DeploymentStatus | null>;
   getPreviousDeployment(projectId: string, deploymentId: string): Promise<Deployment | null>;
   probeImmutableDeployment(deploymentUrl: string, probePath: string): Promise<ProbeResponse>;
   rollbackProductionTo(projectId: string, deploymentId: string): Promise<{ actionUrl?: string }>;
   probeProduction(projectId: string, probePath: string): Promise<ProbeResponse>;
+}
+
+export interface RemediationOutcome {
+  ok: boolean;
+  actionUrl?: string;
+  message: string;
+  evidence?: string[];
+}
+
+export interface MonitorActions {
+  remediate?: (incident: Incident) => Promise<RemediationOutcome>;
+  notify?: (incident: Incident) => Promise<{ ok: boolean; message: string }>;
 }
 
 export interface MonitorOptions {
@@ -35,6 +58,7 @@ export interface MonitorOptions {
   recoveryDelayMs?: number;
   now?: () => Date;
   wait?: (milliseconds: number) => Promise<void>;
+  actions?: MonitorActions;
 }
 
 export type MonitorResult =
@@ -71,6 +95,90 @@ function incidentId(projectId: string, deploymentId: string, probePath: string):
 
 function event(at: string, type: string, message: string) {
   return { at, type, message: evidence(message) };
+}
+
+async function saveAndNotify(
+  incident: Incident,
+  options: MonitorOptions,
+): Promise<void> {
+  options.store.save(incident);
+  if (!options.actions?.notify) return;
+  try {
+    const result = await options.actions.notify(incident);
+    incident.events.push(event(new Date().toISOString(), result.ok ? 'notification' : 'notification_failed', result.message));
+    if (!result.ok) incident.evidence.push(evidence(`Notification failed: ${result.message}`));
+  } catch {
+    incident.events.push(event(new Date().toISOString(), 'notification_failed', 'Notification failed unexpectedly; incident action was not retried.'));
+    incident.evidence.push('Notification failed unexpectedly; the incident remains available locally.');
+  }
+  options.store.save(incident);
+}
+
+async function finishRemediation(
+  incident: Incident,
+  options: MonitorOptions,
+): Promise<void> {
+  const remediate = options.actions?.remediate;
+  if (!remediate) {
+    incident.status = 'needs_human';
+    incident.decision = 'escalate';
+    incident.evidence.push('No remediation dispatcher is configured; no PR was created.');
+    incident.events.push(event(new Date().toISOString(), 'escalation', 'Remediation is unavailable and requires human review.'));
+    await saveAndNotify(incident, options);
+    return;
+  }
+
+  incident.status = 'remediating';
+  incident.events.push(event(new Date().toISOString(), 'remediation_started', 'Dispatching bounded fix-PR remediation.'));
+  options.store.save(incident);
+  try {
+    const result = await remediate(incident);
+    if (result.ok) {
+      incident.status = 'pr_opened';
+      incident.decision = 'fix_pr';
+      const actionUrl = safeLink(result.actionUrl);
+      if (actionUrl) incident.actionUrl = actionUrl;
+      incident.evidence.push(...(result.evidence ?? []).map(evidence));
+      incident.events.push(event(new Date().toISOString(), 'draft_pr', result.message));
+    } else {
+      incident.status = 'needs_human';
+      incident.decision = 'escalate';
+      incident.evidence.push(result.message, ...(result.evidence ?? []).map(evidence));
+      incident.events.push(event(new Date().toISOString(), 'escalation', 'Remediation did not produce a verified draft PR.'));
+    }
+  } catch {
+    incident.status = 'needs_human';
+    incident.decision = 'escalate';
+    incident.evidence.push('Remediation failed unexpectedly; no PR was created.');
+    incident.events.push(event(new Date().toISOString(), 'escalation', 'Remediation failed unexpectedly and requires human review.'));
+  }
+  await saveAndNotify(incident, options);
+}
+
+function makeBuildFailureIncident(
+  options: MonitorOptions,
+  deployment: DeploymentStatus,
+  at: string,
+): Incident {
+  return {
+    id: incidentId(options.projectId, deployment.id, 'build'),
+    kind: 'build_failure',
+    status: 'needs_human',
+    detectedAt: at,
+    projectId: options.projectId,
+    deploymentId: deployment.id,
+    commitSha: deployment.commitSha,
+    deploymentUrl: deployment.immutableUrl ? safeImmutableUrl(deployment.immutableUrl) : undefined,
+    decision: 'fix_pr',
+    evidence: [
+      'A production-targeted deployment failed before activation; the current healthy production deployment was not rolled back.',
+      `Deployment status: ${deployment.state}.`,
+    ].map(evidence),
+    events: [
+      event(at, 'detected', `Deployment ${deployment.id} reported ${deployment.state} before production activation.`),
+      event(at, 'decision', 'Choose the fix-PR path; a failed build must not roll back healthy production.'),
+    ],
+  };
 }
 
 function makeIncident(
@@ -119,6 +227,23 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
   const now = options.now ?? (() => new Date());
   const probePath = options.probePath;
   if (!safeProbePath(probePath)) return { action: 'unavailable', reason: 'Probe path must be a local absolute route without query strings.' };
+
+  if (options.provider.getLatestDeploymentStatus) {
+    try {
+      const latest = await options.provider.getLatestDeploymentStatus(options.projectId);
+      if (latest?.state === 'ERROR') {
+        const id = incidentId(options.projectId, latest.id, 'build');
+        const existing = options.store.get(id);
+        if (existing) return { action: 'incident', incident: existing, duplicate: true };
+        const incident = makeBuildFailureIncident(options, latest, now().toISOString());
+        options.store.save(incident);
+        await finishRemediation(incident, options);
+        return { action: 'incident', incident };
+      }
+    } catch {
+      // A deployment-status outage must not suppress the independent runtime probe.
+    }
+  }
 
   let current: Deployment | null;
   try {
@@ -246,8 +371,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
   );
 
   if (decision.action !== 'rollback') {
-    incident.status = 'needs_human';
-    options.store.save(incident);
+    await finishRemediation(incident, options);
     return { action: 'incident', incident };
   }
 

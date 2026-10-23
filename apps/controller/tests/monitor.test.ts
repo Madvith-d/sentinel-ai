@@ -64,6 +64,51 @@ function monitorOptions(deploymentProvider: DeploymentProvider) {
 }
 
 describe('checkProject', () => {
+  it('records a failed build for remediation without rolling back healthy production', async () => {
+    const fake = provider();
+    const buildProvider: DeploymentProvider = {
+      ...fake.implementation,
+      async getLatestDeploymentStatus() {
+        return { id: 'failed-build', state: 'ERROR' as const, createdAt: at.toISOString(), commitSha: 'a'.repeat(40) };
+      },
+    };
+    const options = monitorOptions(buildProvider);
+    const result = await checkProject(options);
+
+    expect(result.action).toBe('incident');
+    if (result.action !== 'incident') throw new Error('Expected a build incident.');
+    expect(result.incident.kind).toBe('build_failure');
+    expect(result.incident.decision).toBe('escalate');
+    expect(result.incident.status).toBe('needs_human');
+    expect(fake.calls.rollback).toBe(0);
+  });
+
+  it('records remediation and notification outcomes without hiding failures', async () => {
+    const fake = provider({ previousResult: 'fail' });
+    const notifications: string[] = [];
+    const options = {
+      ...monitorOptions(fake.implementation),
+      actions: {
+        remediate: async () => ({ ok: true as const, actionUrl: 'https://github.com/example/nexathon/pull/7', message: 'Draft PR opened.' }),
+        notify: async (incident: { status: string }) => {
+          notifications.push(incident.status);
+          return { ok: false as const, message: 'Slack unavailable.' };
+        },
+      },
+    };
+    await checkProject(options);
+    await checkProject(options);
+    const result = await checkProject(options);
+
+    expect(result.action).toBe('incident');
+    if (result.action !== 'incident') throw new Error('Expected a persistent-defect incident.');
+    expect(result.incident.status).toBe('pr_opened');
+    expect(result.incident.actionUrl).toBe('https://github.com/example/nexathon/pull/7');
+    expect(result.incident.events.map(event => event.type)).toContain('draft_pr');
+    expect(result.incident.events.map(event => event.type)).toContain('notification_failed');
+    expect(notifications).toEqual(['pr_opened']);
+  });
+
   it('waits for three failures, then rolls back once and verifies recovery', async () => {
     const fake = provider();
     const options = monitorOptions(fake.implementation);
@@ -100,7 +145,7 @@ describe('checkProject', () => {
     expect(result.action).toBe('incident');
     if (result.action !== 'incident') throw new Error('Expected an incident result.');
     expect(result.incident.kind).toBe('persistent_defect');
-    expect(result.incident.decision).toBe('fix_pr');
+    expect(result.incident.decision).toBe('escalate');
     expect(result.incident.status).toBe('needs_human');
     expect(fake.calls.rollback).toBe(0);
   });
