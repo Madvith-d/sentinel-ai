@@ -1,6 +1,7 @@
 export * from './format';
 import { formatIncidentReport, type Incident, type IncidentReport } from './format';
 import { resolveSmtpConfig, sendSmtpMail, type SmtpConfig } from './smtp';
+export { resolveSmtpConfig, type SmtpConfig };
 
 export type NotificationResult =
   | { ok: true; report: IncidentReport }

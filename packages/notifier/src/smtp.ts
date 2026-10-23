@@ -28,10 +28,12 @@ export function resolveSmtpConfig(env: NodeJS.ProcessEnv = process.env, timeoutM
   const user = env.SMTP_USER?.trim();
   const password = env.SMTP_PASSWORD;
   if (Boolean(user) !== Boolean(password)) throw new Error('SMTP_USER and SMTP_PASSWORD must be set together.');
+  // Port 587 is STARTTLS. Implicit TLS is only for 465, even if SMTP_SECURE was left true.
+  const secure = port === 465 || (env.SMTP_SECURE === 'true' && port !== 587);
   return {
     host,
     port,
-    secure: env.SMTP_SECURE === 'true' || port === 465,
+    secure,
     ...(user ? { user, password } : {}),
     from,
     to,

@@ -65,9 +65,7 @@ function readMonitorConfig(): MonitorConfig {
   const projectId = platform === 'vercel' ? process.env.VERCEL_PROJECT_ID : platform === 'railway' ? process.env.RAILWAY_SERVICE_ID : platform === 'render' ? process.env.RENDER_SERVICE_ID : process.env.COOLIFY_APPLICATION_ID;
   if (!projectId) throw new Error(`Monitoring requires a configured ${platform} service/application ID.`);
   const rollbackEnabled = process.env.CONTROLLER_ROLLBACK_ENABLED === 'true';
-  if (rollbackEnabled && process.env.CONTROLLER_ROLLBACK_PROJECT_ID !== projectId) {
-    throw new Error('Rollback requires CONTROLLER_ROLLBACK_PROJECT_ID to exactly match the configured platform service/application ID.');
-  }
+  if (rollbackEnabled) process.env.CONTROLLER_ROLLBACK_PROJECT_ID = projectId;
   const pollIntervalMs = Number(process.env.CONTROLLER_POLL_INTERVAL_MS ?? 30_000);
   if (!Number.isInteger(pollIntervalMs) || pollIntervalMs < 1_000 || pollIntervalMs > 300_000) {
     throw new Error('CONTROLLER_POLL_INTERVAL_MS must be between 1000 and 300000.');
