@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { DraftPrResult, RemediationRequest, RemediationResult } from './types.js';
-import { ALLOWED_PATH_PREFIX, truncate, validateChangedFiles, validateRequest } from './validation.js';
+import { allowedPathPrefix, truncate, validateChangedFiles, validateRequest } from './validation.js';
 
 const exec = promisify(execFile);
 const MAX_PATCH_BYTES = 256 * 1024;
@@ -18,12 +18,13 @@ export function validatePatch(patch: string): string[] {
   const headers = [...patch.matchAll(/^diff --git a\/([^\s]+) b\/([^\s]+)$/gm)];
   if (headers.length === 0 || headers.length > 40) throw new Error('Patch has no valid file headers or is too large');
   const paths = headers.flatMap(([, before, after]) => [before, after]);
-  validateChangedFiles(paths);
+  const prefix = allowedPathPrefix();
+  validateChangedFiles(paths, prefix);
   if (/^(?:rename from|rename to|copy from|copy to) /m.test(patch)) throw new Error('Renames and copies require human review');
   for (const line of patch.split('\n')) {
     if (line.startsWith('+++ b/') || line.startsWith('--- a/')) {
       const path = line.slice(6);
-      if (!path.startsWith(ALLOWED_PATH_PREFIX) || path.includes('..')) throw new Error('Patch has a path outside the demo app');
+      if (!path.startsWith(prefix) || path.includes('..')) throw new Error('Patch has a path outside the demo app');
     }
   }
   return [...new Set(paths)];

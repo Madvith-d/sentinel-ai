@@ -1,12 +1,38 @@
 import type { ProviderConfig, RemediationRequest } from './types.js';
 
-export const ALLOWED_REPOSITORY = 'iotserver24/nexathon';
-export const ALLOWED_PATH_PREFIX = 'apps/sample/';
+const DEFAULT_REPOSITORY = 'iotserver24/nexathon';
+const DEFAULT_PATH_PREFIX = 'apps/sample/';
+const REPOSITORY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/;
+const PREFIX_PATTERN = /^(?:[A-Za-z0-9._-]+\/)+$/;
 const FORBIDDEN_SEGMENTS = /(^|\/)(?:node_modules|\.git|\.supercharge|dist|build|coverage|\.next)(\/|$)|(^|\/)(?:\.env(?:\.|$)|.*\.(?:pem|key)$)/i;
 
-export function validateRequest(request: RemediationRequest, allowedRepository = ALLOWED_REPOSITORY): void {
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function envValue(name: string, fallback: string, pattern: RegExp, label: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) return fallback;
+  if (!pattern.test(value)) throw new Error(`${name} is not a valid ${label}`);
+  return value;
+}
+
+/**
+ * The one repository remediation may touch. Overriding it still names a single
+ * exact repository; there is no wildcard form.
+ */
+export function allowedRepository(): string {
+  return envValue('REMEDIATOR_ALLOWED_REPOSITORY', DEFAULT_REPOSITORY, REPOSITORY_PATTERN, 'owner/name repository');
+}
+
+/** The one subtree patches may touch, relative to the repository root. */
+export function allowedPathPrefix(): string {
+  return envValue('REMEDIATOR_ALLOWED_PATH_PREFIX', DEFAULT_PATH_PREFIX, PREFIX_PATTERN, 'subdirectory prefix');
+}
+
+export function validateRequest(request: RemediationRequest, repository = allowedRepository()): void {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$/.test(request.incidentId)) throw new Error('Invalid incident ID');
-  if (request.repository !== allowedRepository) throw new Error('Repository is not allowlisted');
+  if (request.repository !== repository) throw new Error('Repository is not allowlisted');
   if (!/^[0-9a-f]{40}$/i.test(request.commitSha)) throw new Error('A full 40-character commit SHA is required');
   for (const command of [request.setupCommand, request.reproduceCommand, request.testCommand, request.buildCommand]) {
     if (!command || command.length > 500 || /[\0\r\n]/.test(command)) throw new Error('Invalid project command');
@@ -16,8 +42,9 @@ export function validateRequest(request: RemediationRequest, allowedRepository =
   }
   if (request.reproductionFixture) {
     const { path, content } = request.reproductionFixture;
-    if (typeof path !== 'string' || !/^apps\/sample\/tests\/[A-Za-z0-9._/-]+\.test\.ts$/.test(path) || path.includes('..') || FORBIDDEN_SEGMENTS.test(path)) {
-      throw new Error('Reproduction fixture must be a safe apps/sample/tests/*.test.ts path');
+    const fixturePattern = new RegExp(`^${escapeRegExp(allowedPathPrefix())}tests/[A-Za-z0-9._/-]+\\.test\\.ts$`);
+    if (typeof path !== 'string' || !fixturePattern.test(path) || path.includes('..') || FORBIDDEN_SEGMENTS.test(path)) {
+      throw new Error(`Reproduction fixture must be a safe ${allowedPathPrefix()}tests/*.test.ts path`);
     }
     if (typeof content !== 'string' || !content.trim() || Buffer.byteLength(content) > 12_000) {
       throw new Error('Reproduction fixture must be nonempty and at most 12 KiB');
@@ -33,11 +60,11 @@ export function validateProvider(config: ProviderConfig): void {
   if (!['chat_completions', 'messages', 'responses'].includes(config.apiBackend)) throw new Error('Unsupported model API backend');
 }
 
-export function validateChangedFiles(paths: string[]): void {
+export function validateChangedFiles(paths: string[], prefix = allowedPathPrefix()): void {
   if (paths.length === 0) throw new Error('The agent produced no changed files');
   if (paths.length > 40) throw new Error('Too many changed files');
   for (const path of paths) {
-    if (!path.startsWith(ALLOWED_PATH_PREFIX) || path.includes('..') || FORBIDDEN_SEGMENTS.test(path)) {
+    if (!path.startsWith(prefix) || path.includes('..') || FORBIDDEN_SEGMENTS.test(path)) {
       throw new Error(`Patch contains a disallowed path: ${path}`);
     }
   }

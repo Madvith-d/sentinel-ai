@@ -2,7 +2,7 @@ import { CommandExitError, Sandbox, type CommandResult } from 'e2b';
 import { createAgentActivityParser, type RemediationActivity } from './activity.js';
 import { remediationPrompt, superchargeConfig } from './prompt.js';
 import type { ProviderConfig, RemediationFailure, RemediationRequest, RemediationResult } from './types.js';
-import { shellQuote, truncate, validateChangedFiles, validateProvider, validateRequest } from './validation.js';
+import { allowedPathPrefix, shellQuote, truncate, validateChangedFiles, validateProvider, validateRequest } from './validation.js';
 
 const REPO_DIR = '/home/user/nexathon';
 const SC_VERSION = '1.3.30'; // Latest verified published release at initial implementation.
@@ -80,6 +80,7 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
       const destination = `${REPO_DIR}/${request.reproductionFixture.path}`;
       const existing = await command(sandbox, `test -e ${shellQuote(destination)}`, 10_000);
       if (existing.exitCode === 0) return failure(request, 'unsafe_patch', 'Fixture path already exists at the incident SHA');
+      await command(sandbox, `mkdir -p ${shellQuote(destination.slice(0, destination.lastIndexOf('/')))}`, 10_000);
       await sandbox.files.write(destination, request.reproductionFixture.content);
     }
     await emit('reproduction', 'stage', 'Checking that the incident reproduces before a patch');
@@ -99,7 +100,7 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
     let diagnosticsNoted = false;
     await emit('agent', 'stage', 'Supercharge is diagnosing and editing in E2B');
     const agent = await command(sandbox,
-      'export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"; supercharge --cwd /home/user/nexathon --prompt-file /home/user/incident-prompt.txt --always-approve --no-subagents --disable-web-search --max-turns 18 --output-format streaming-json',
+      'export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"; supercharge --cwd /home/user/nexathon --prompt-file /home/user/incident-prompt.txt --always-approve --no-subagents --disable-web-search --max-turns 40 --output-format streaming-json',
       270_000, REPO_DIR, envs, {
         onStdout: (data) => parser.push(data),
         onStderr: () => { if (!diagnosticsNoted) { diagnosticsNoted = true; void emit('agent', 'status', 'Agent emitted diagnostics; raw stderr is hidden'); } },
@@ -129,7 +130,7 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
     if (build.exitCode !== 0) return failure(request, 'build_failed', 'Project build failed after the patch', redacted(build.stderr || build.stdout, provider));
 
     // Stage only the demo target. Never return provider config, tokens, or edits elsewhere.
-    await checked(sandbox, 'git add -A -- apps/sample', 15_000, REPO_DIR);
+    await checked(sandbox, `git add -A -- ${allowedPathPrefix()}`, 15_000, REPO_DIR);
     const staged = await checked(sandbox, 'git diff --cached --name-only -z', 15_000, REPO_DIR);
     validateChangedFiles(staged.stdout.split('\0').filter(Boolean));
     const diff = await checked(sandbox, 'git diff --cached --binary --no-ext-diff HEAD', 20_000, REPO_DIR);
