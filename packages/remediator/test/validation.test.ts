@@ -65,3 +65,42 @@ describe('publisher patch boundary', () => {
     expect(() => validatePatch(`${safe}new file mode 120000\n`)).toThrow();
   });
 });
+
+describe('configurable target stays a single exact repository', () => {
+  const withEnv = (values: Record<string, string>, run: () => void) => {
+    const saved = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]));
+    Object.assign(process.env, values);
+    try { run(); } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
+  };
+
+  test('accepts the configured repository and subtree', () => {
+    withEnv({ REMEDIATOR_ALLOWED_REPOSITORY: 'Ronit-Pai/testsite', REMEDIATOR_ALLOWED_PATH_PREFIX: 'src/' }, () => {
+      const target = { ...request, repository: 'Ronit-Pai/testsite' };
+      expect(() => validateRequest(target)).not.toThrow();
+      expect(() => validateChangedFiles(['src/app/api/tasks/route.ts'])).not.toThrow();
+      expect(() => validateRequest(request)).toThrow('allowlisted');
+      expect(() => validateChangedFiles(['apps/sample/api/health.ts'])).toThrow();
+    });
+  });
+
+  test('rejects wildcard or malformed overrides', () => {
+    withEnv({ REMEDIATOR_ALLOWED_REPOSITORY: 'Ronit-Pai/*' }, () => {
+      expect(() => validateRequest({ ...request, repository: 'Ronit-Pai/*' })).toThrow('not a valid');
+    });
+    withEnv({ REMEDIATOR_ALLOWED_PATH_PREFIX: '/' }, () => {
+      expect(() => validateChangedFiles(['src/app/page.tsx'])).toThrow('not a valid');
+    });
+  });
+
+  test('keeps the reproduction fixture inside the configured subtree', () => {
+    withEnv({ REMEDIATOR_ALLOWED_REPOSITORY: 'Ronit-Pai/testsite', REMEDIATOR_ALLOWED_PATH_PREFIX: 'src/' }, () => {
+      const target = { ...request, repository: 'Ronit-Pai/testsite' };
+      expect(() => validateRequest({ ...target, reproductionFixture: { path: 'src/tests/filter.test.ts', content: 'test("x", () => {});' } })).not.toThrow();
+      expect(() => validateRequest({ ...target, reproductionFixture: { path: 'apps/sample/tests/filter.test.ts', content: 'test("x", () => {});' } })).toThrow('safe');
+    });
+  });
+});
