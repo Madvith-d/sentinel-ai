@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'bun:test';
 import { createHmac } from 'node:crypto';
-import { appJwt, githubConnectPage, verifyGithubWebhook } from '../src/github-app';
+import { appJwt, githubConnectPage, githubConnectTarget, installationRepositoryNames, matchingVercelProject, verifyGithubWebhook } from '../src/github-app';
 
 describe('github app connect', () => {
   it('builds a manifest that asks for repo and pull request access', () => {
@@ -17,6 +17,18 @@ describe('github app connect', () => {
     const page = githubConnectPage('https://sentinel.example');
     expect(page).toContain('https://sentinel.example/api/github/webhook');
     expect(page).toContain('sentinel-ai-bot');
+  });
+
+  it('sends setup to the existing bot install page', () => {
+    expect(githubConnectTarget('sentinel-ai-bot', '123')).toEqual({ redirect: 'https://github.com/apps/sentinel-ai-bot/installations/new' });
+    expect('error' in githubConnectTarget(undefined, '123')).toBe(true);
+  });
+
+  it('reads installation repositories and matches a Vercel domain', () => {
+    expect(installationRepositoryNames({ repositories: [{ full_name: 'Ronit-Pai/testsite' }, { full_name: 'bad' }] })).toEqual(['Ronit-Pai/testsite']);
+    const projects = [{ id: 'prj_1', name: 'testsite', domains: ['testsite-three-iota.vercel.app'] }];
+    expect(matchingVercelProject(projects, 'testsite-three-iota.vercel.app')).toBe('prj_1');
+    expect(matchingVercelProject(projects, 'other.example')).toBeNull();
   });
 
   it('checks the GitHub webhook signature', () => {

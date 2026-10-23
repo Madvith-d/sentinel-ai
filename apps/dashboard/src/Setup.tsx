@@ -19,6 +19,9 @@ export function Setup({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [vercel, setVercel] = useState<VercelConnect>(null);
+  const [repos, setRepos] = useState<string[]>([]);
+  const [projects, setProjects] = useState<{ id: string; name: string; domains: string[] }[]>([]);
+  const [monitorNote, setMonitorNote] = useState('');
 
   const loadSettings = useCallback(async (signal?: AbortSignal) => {
     const response = await fetch('/api/settings', { headers: { Accept: 'application/json' }, signal });
@@ -37,6 +40,35 @@ export function Setup({ onClose }: { onClose: () => void }) {
   }, [loadSettings]);
 
   const field = useMemo(() => new Map(fields.map(item => [item.key, item])), [fields]);
+  const githubReady = Boolean(field.get('GITHUB_INSTALLATION_ID')?.configured);
+  const vercelReady = Boolean(field.get('VERCEL_ACCESS_TOKEN')?.configured);
+  const botSlug = field.get('GITHUB_APP_SLUG')?.value || 'not configured';
+  const monitorOn = field.get('CONTROLLER_MONITOR_ENABLED')?.value === 'true';
+
+  useEffect(() => {
+    if (!githubReady) return;
+    const abort = new AbortController();
+    void fetch('/api/github/repos', { headers: { Accept: 'application/json' }, signal: abort.signal })
+      .then(response => response.ok ? response.json() : { repositories: [] })
+      .then(body => setRepos((body as { repositories?: string[] }).repositories ?? []))
+      .catch(() => undefined);
+    return () => abort.abort();
+  }, [githubReady]);
+
+  useEffect(() => {
+    if (!vercelReady) return;
+    const abort = new AbortController();
+    void fetch('/api/vercel/projects', { headers: { Accept: 'application/json' }, signal: abort.signal })
+      .then(response => response.ok ? response.json() : { projects: [] })
+      .then(body => {
+        const listed = (body as { projects?: { id: string; name: string; domains: string[] }[]; selected?: string | null }).projects ?? [];
+        setProjects(listed);
+        const selected = (body as { selected?: string | null }).selected;
+        if (selected) setDraft(current => ({ ...current, VERCEL_PROJECT_ID: current.VERCEL_PROJECT_ID || selected }));
+      })
+      .catch(() => undefined);
+    return () => abort.abort();
+  }, [vercelReady]);
   const groups = [...new Set(fields.map(item => item.group).filter(group => group !== 'Vercel'))];
   const setValue = (key: string, value: string) => setDraft(current => ({ ...current, [key]: value }));
 
@@ -80,6 +112,27 @@ export function Setup({ onClose }: { onClose: () => void }) {
     }
   }
 
+  async function choose(key: string, value: string) {
+    setValue(key, value);
+    const response = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ values: { [key]: value } }),
+    });
+    if (!response.ok) setError('That choice was not saved.');
+    else await loadSettings();
+  }
+
+  async function startMonitor() {
+    setError('');
+    setMonitorNote('');
+    const response = await fetch('/api/monitor/start', { method: 'POST', headers: { Accept: 'application/json' } });
+    const body = await response.json().catch(() => ({})) as { error?: string; already?: boolean; started?: boolean };
+    if (!response.ok) { setError(body.error || 'The monitor did not start.'); return; }
+    setMonitorNote(body.already ? 'Monitor is already running.' : 'Monitor started.');
+    await loadSettings();
+  }
+
   async function save() {
     setBusy(true);
     setError('');
@@ -115,19 +168,50 @@ export function Setup({ onClose }: { onClose: () => void }) {
 
     {error && <div className="error-box" role="alert"><strong>Setup needs attention</strong><p>{error}</p></div>}
 
+    <section className="setup-connection-row">
+      <div>
+        <div className="provider-mark provider-github" aria-hidden="true">GH</div>
+        <div>
+          <h2>GitHub bot</h2>
+          <p>{githubReady ? `Connected to ${botSlug}.` : `Use the existing bot ${botSlug}. This does not create a new app.`}</p>
+        </div>
+      </div>
+      {field.get('GITHUB_APP_ID')?.configured
+        ? <a className="button button-secondary" href="/api/github/connect">Give access</a>
+        : <span className="connect-status">Bot is not configured on the controller.</span>}
+    </section>
+
+    <section className="setup-hero">
+      <div className="setup-hero-copy"><div><h2>Repository</h2><p>Choose the repo the bot can open pull requests on.</p></div></div>
+      <label className="setup-field">
+        <span>Repository</span>
+        <select value={draft.REMEDIATOR_REPOSITORY ?? ''} onChange={event => void choose('REMEDIATOR_REPOSITORY', event.target.value)}>
+          <option value="">Choose a repository</option>
+          {repos.map(repo => <option key={repo} value={repo}>{repo}</option>)}
+        </select>
+      </label>
+    </section>
+
     <section className="setup-hero" aria-labelledby="vercel-title">
       <div className="setup-hero-copy">
         <div className="provider-mark provider-vercel" aria-hidden="true">V</div>
         <div>
           <div className="section-kicker"><span className="status-dot status-dot-warn" /> Primary provider</div>
-          <h2 id="vercel-title">Vercel monitoring</h2>
-          <p>Connect with Vercel OAuth or paste a project-scoped access token. Credentials are sent only to the local controller and never rendered back into the browser.</p>
+          <h2 id="vercel-title">Production link and Vercel</h2>
+          <p>{vercelReady ? 'Vercel is connected.' : 'Paste the public site link, then connect Vercel. The matching project is selected when its domain matches the link.'}</p>
         </div>
       </div>
       <div className="setup-hero-actions">
-        <button className="button button-primary" type="button" onClick={() => void connectVercel()}>Connect with Vercel</button>
+        <button className="button button-primary" type="button" onClick={() => void connectVercel()}>{vercelReady ? 'Vercel connected' : 'Connect Vercel'}</button>
         {vercel && <div className="connect-status"><strong>{vercel.status}</strong><span>Code <code>{vercel.userCode}</code> · <a href={vercel.verificationUri} target="_blank" rel="noreferrer">open verification</a></span></div>}
       </div>
+      <label className="setup-field">
+        <span>Vercel project</span>
+        <select value={draft.VERCEL_PROJECT_ID ?? ''} onChange={event => void choose('VERCEL_PROJECT_ID', event.target.value)}>
+          <option value="">Choose a project</option>
+          {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </select>
+      </label>
       <div className="field-grid field-grid-2">
         {renderField('VERCEL_ACCESS_TOKEN', 'field-wide')}
         {renderField('VERCEL_TEAM_ID')}
@@ -135,18 +219,10 @@ export function Setup({ onClose }: { onClose: () => void }) {
         {renderField('VERCEL_PRODUCTION_DOMAIN')}
         {renderField('CONTROLLER_PROBE_PATH')}
       </div>
-      <div className="toggle-row">
-        {renderField('CONTROLLER_MONITOR_ENABLED')}
-        {renderField('CONTROLLER_ROLLBACK_ENABLED')}
+      <div className="setup-hero-actions">
+        <button className="button button-primary" type="button" onClick={() => void startMonitor()}>{monitorOn ? 'Monitor running' : 'Start monitor'}</button>
+        {monitorNote && <p className="success-message" role="status">{monitorNote}</p>}
       </div>
-    </section>
-
-    <section className="setup-connection-row">
-      <div>
-        <div className="provider-mark provider-github" aria-hidden="true">GH</div>
-        <div><h2>GitHub app</h2><p>Use a short-lived installation token for repository access and draft pull requests.</p></div>
-      </div>
-      <a className="button button-secondary" href="/api/github/connect">Connect GitHub</a>
     </section>
 
     {groups.map(group => <section className="setup-advanced" key={group}>
