@@ -2,6 +2,9 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { IncidentStore } from './incident-store';
 import { createIncidentApi } from './api';
+import { ActivityHub } from './activity';
+import { createActivityApi } from './activity-api';
+import { dispatchRun } from './remediation';
 import { startPollingWorker, type PollingWorker } from './worker';
 import { VercelProvider } from './vercel-provider';
 import { createControllerActions, type RemediationConfig } from './actions';
@@ -97,12 +100,25 @@ if (remediationFlag === 'true') {
   };
 }
 const actions = createControllerActions({ slackWebhookUrl: process.env.SLACK_WEBHOOK_URL, remediation });
+
+const hub = new ActivityHub();
+const incidentApi = createIncidentApi(store);
+const activityApi = createActivityApi({
+  hub,
+  lookupIncident: id => store.get(id),
+  dispatch: (runId, incident, source) => dispatchRun(hub, runId, incident, source, remediation),
+  token: process.env.NEXATHON_RUN_TOKEN,
+  aiConfigured: Boolean(remediation),
+});
 const server = Bun.serve({
   hostname: host,
   port,
-  fetch: createIncidentApi(store),
+  fetch: async (request, bunServer) => (await activityApi(request, bunServer)) ?? incidentApi(request),
 });
 console.log(`Incident API listening on http://${server.hostname}:${server.port}`);
+if (!process.env.NEXATHON_RUN_TOKEN) {
+  console.info('Agent runs are read-only: set NEXATHON_RUN_TOKEN to allow the local CLI to start one.');
+}
 
 let worker: PollingWorker | undefined;
 if (monitorConfig) {

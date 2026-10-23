@@ -1,4 +1,5 @@
 import { CommandExitError, Sandbox, type CommandResult } from 'e2b';
+import { createAgentActivityParser, type RemediationActivity } from './activity.js';
 import { remediationPrompt, superchargeConfig } from './prompt.js';
 import type { ProviderConfig, RemediationFailure, RemediationRequest, RemediationResult } from './types.js';
 import { shellQuote, truncate, validateChangedFiles, validateProvider, validateRequest } from './validation.js';
@@ -13,16 +14,20 @@ function redacted(text: string, config: ProviderConfig): string {
   for (const secret of [config.apiKey, config.githubReadToken]) {
     if (secret && secret.length >= 4) output = output.replaceAll(secret, '[REDACTED]');
   }
-  return truncate(output);
+  return truncate(output
+    .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9+/_.=-]+/gi, '[REDACTED authorization]')
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|xox[baprs]-[A-Za-z0-9-]+|sk-[A-Za-z0-9_-]{8,})\b/g, '[REDACTED token]')
+    .replace(/https:\/\/hooks\.slack(?:-gov)?\.com\/services\/[^\s<>"']+/gi, '[REDACTED webhook]')); 
 }
 
 function failure(request: RemediationRequest, reason: RemediationFailure, message: string, evidence?: string): RemediationResult {
   return { ok: false, incidentId: request.incidentId, reason, message, ...(evidence ? { evidence } : {}) };
 }
 
-async function command(sandbox: Sandbox, cmd: string, timeoutMs: number, cwd?: string, envs?: Record<string, string>): Promise<CommandResult> {
+async function command(sandbox: Sandbox, cmd: string, timeoutMs: number, cwd?: string, envs?: Record<string, string>,
+  callbacks?: { onStdout?: (data: string) => void; onStderr?: (data: string) => void }): Promise<CommandResult> {
   try {
-    return await sandbox.commands.run(cmd, { cwd, envs, timeoutMs });
+    return await sandbox.commands.run(cmd, { cwd, envs, timeoutMs, ...callbacks });
   } catch (error) {
     if (error instanceof CommandExitError) return { exitCode: error.exitCode, error: error.error, stdout: error.stdout, stderr: error.stderr };
     throw error;
@@ -39,25 +44,33 @@ async function checked(sandbox: Sandbox, cmd: string, timeoutMs: number, cwd?: s
  * Clone at an exact revision, reproduce the failure, run a bounded coding agent,
  * verify tests/build, and return a data-only patch. No GitHub write token enters E2B.
  */
-export async function generateFixInE2B(request: RemediationRequest, provider: ProviderConfig): Promise<RemediationResult> {
+export async function generateFixInE2B(request: RemediationRequest, provider: ProviderConfig,
+  options?: { onEvent?: (event: RemediationActivity) => void | Promise<void> }): Promise<RemediationResult> {
   validateRequest(request);
   validateProvider(provider);
   if (!process.env.E2B_API_KEY) throw new Error('E2B_API_KEY is required on the controller');
   const template = process.env.E2B_REMEDIATOR_TEMPLATE;
   if (!template) throw new Error('E2B_REMEDIATOR_TEMPLATE is required; the default base sandbox cannot install/build the sample app');
 
+  const emit = async (phase: RemediationActivity['phase'], kind: RemediationActivity['kind'], message: string) => {
+    try { await options?.onEvent?.({ at: new Date().toISOString(), phase, kind, message: redacted(message, provider).slice(0, 1000) }); }
+    catch { /* Dashboard transport failure must not abort remediation. */ }
+  };
   let sandbox: Sandbox | undefined;
   try {
+    await emit('sandbox', 'stage', 'Starting isolated E2B sandbox');
     const options = {
       timeoutMs: 600_000,
       metadata: { purpose: 'nexathon-remediation', incident: request.incidentId },
     };
     sandbox = await Sandbox.create(template, options);
+    await emit('checkout', 'stage', 'Cloning the allowlisted repository at the incident revision');
     await checked(sandbox, `git clone --no-checkout --filter=blob:none ${shellQuote(`https://github.com/${request.repository}.git`)} ${REPO_DIR}`, 90_000);
     await checked(sandbox, `git checkout --detach ${shellQuote(request.commitSha)}`, 60_000, REPO_DIR);
     const head = (await checked(sandbox, 'git rev-parse HEAD', 10_000, REPO_DIR)).stdout.trim();
     if (head.toLowerCase() !== request.commitSha.toLowerCase()) throw new Error('Cloned revision does not match incident SHA');
 
+    await emit('setup', 'stage', 'Preparing pinned Bun and sample dependencies');
     // Bun is used for dependency setup, tests, and build in the target repo.
     await checked(sandbox, `if [ -x "$HOME/.bun/bin/bun" ] && [ "$("$HOME/.bun/bin/bun" --version)" = "${BUN_VERSION}" ]; then "$HOME/.bun/bin/bun" --version; else curl -fsSL https://bun.com/install -o /tmp/bun-install.sh && bash /tmp/bun-install.sh bun-v${BUN_VERSION}; fi`, 90_000);
     const setup = await command(sandbox, `export PATH="$HOME/.bun/bin:$PATH"; ${request.setupCommand}`, 180_000, REPO_DIR);
@@ -69,8 +82,10 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
       if (existing.exitCode === 0) return failure(request, 'unsafe_patch', 'Fixture path already exists at the incident SHA');
       await sandbox.files.write(destination, request.reproductionFixture.content);
     }
+    await emit('reproduction', 'stage', 'Checking that the incident reproduces before a patch');
     const baseline = await command(sandbox, `export PATH="$HOME/.bun/bin:$PATH"; ${request.reproduceCommand}`, 120_000, REPO_DIR);
     if (baseline.exitCode === 0) return failure(request, 'not_reproducible', 'Reproduction already passes at the incident SHA; no patch or PR created');
+    await emit('reproduction', 'status', 'Baseline failed as expected; agent may now attempt a fix');
 
     await checked(sandbox,
       `if "$HOME/.local/bin/supercharge" --version 2>/dev/null | grep -q '^supercharge ${SC_VERSION} '; then "$HOME/.local/bin/supercharge" --version; else curl -fsSL https://www.superchargeai.in/install.sh -o /tmp/supercharge-install.sh && SUPERCHARGE_VERSION=${SC_VERSION} SUPERCHARGE_GITHUB_REPO=iotserver24/supercharge-releases SUPERCHARGE_NO_MODIFY_PATH=1 bash /tmp/supercharge-install.sh && "$HOME/.local/bin/supercharge" --version; fi`,
@@ -79,9 +94,17 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
     await checked(sandbox, 'chmod 700 /home/user/.supercharge && chmod 600 /home/user/.supercharge/config.toml', 10_000);
     await sandbox.files.write('/home/user/incident-prompt.txt', remediationPrompt(request));
     const envs = { GITHUB_READ_TOKEN: provider.githubReadToken };
+    const parser = createAgentActivityParser((kind, message) => { void emit('agent', kind, message); },
+      (text) => redacted(text, provider));
+    let diagnosticsNoted = false;
+    await emit('agent', 'stage', 'Supercharge is diagnosing and editing in E2B');
     const agent = await command(sandbox,
-      'export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"; supercharge --cwd /home/user/nexathon --prompt-file /home/user/incident-prompt.txt --always-approve --no-subagents --disable-web-search --max-turns 18 --output-format json',
-      270_000, REPO_DIR, envs);
+      'export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"; supercharge --cwd /home/user/nexathon --prompt-file /home/user/incident-prompt.txt --always-approve --no-subagents --disable-web-search --max-turns 18 --output-format streaming-json',
+      270_000, REPO_DIR, envs, {
+        onStdout: (data) => parser.push(data),
+        onStderr: () => { if (!diagnosticsNoted) { diagnosticsNoted = true; void emit('agent', 'status', 'Agent emitted diagnostics; raw stderr is hidden'); } },
+      });
+    parser.finish();
     if (agent.exitCode !== 0) return failure(request, 'agent_failed', 'Supercharge failed before a verified patch was available', redacted(agent.stderr || agent.stdout, provider));
     if (request.reproductionFixture) {
       const current = await sandbox.files.read(`${REPO_DIR}/${request.reproductionFixture.path}`);
@@ -97,6 +120,7 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
       return failure(request, changedFiles.length ? 'unsafe_patch' : 'no_patch', (error as Error).message);
     }
 
+    await emit('verification', 'stage', 'Re-running the reproduction, project tests, and build');
     const repro = await command(sandbox, `export PATH="$HOME/.bun/bin:$PATH"; ${request.reproduceCommand}`, 120_000, REPO_DIR);
     if (repro.exitCode !== 0) return failure(request, 'test_failed', 'Reproduction still fails after the patch', redacted(repro.stderr || repro.stdout, provider));
     const tests = await command(sandbox, `export PATH="$HOME/.bun/bin:$PATH"; ${request.testCommand}`, 120_000, REPO_DIR);
@@ -116,6 +140,7 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
     if (/^(?:new file mode|deleted file mode) 120000$/m.test(diff.stdout) || diff.stdout.includes('GIT binary patch')) {
       return failure(request, 'unsafe_patch', 'Symlinks and binary patches require human review');
     }
+    await emit('patch', 'status', `Verified patch for ${changedFiles.length} sample files; controller may open a draft PR`);
     return {
       ok: true,
       incidentId: request.incidentId,
@@ -123,13 +148,14 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
       patch: diff.stdout,
       changedFiles,
       baseline: redacted(baseline.stderr || baseline.stdout, provider),
-      agentSummary: redacted(agent.stdout || agent.stderr, provider),
+      agentSummary: `Supercharge completed ${parser.toolCalls} tool calls; raw agent stream intentionally omitted`,
       testOutput: redacted(`${repro.stdout}\n${tests.stdout}\n${tests.stderr}`, provider),
       buildOutput: redacted(`${build.stdout}\n${build.stderr}`, provider),
       mcpConfigured: Boolean(provider.githubReadToken),
     };
   } catch (error) {
     // Never surface command arguments or config files in error text.
+    await emit('sandbox', 'status', 'Sandbox or verification failed; human review needed');
     return failure(request, 'sandbox_error', 'Sandbox setup, execution, or verification failed', redacted(String(error), provider));
   } finally {
     if (sandbox) await sandbox.kill().catch(() => undefined);
