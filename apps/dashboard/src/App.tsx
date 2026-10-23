@@ -43,13 +43,36 @@ function StatusPill({ status }: { status: Incident['status'] }) {
   return <span className={`status status-${status}`}>{statusLabels[status]}</span>;
 }
 
+function rolledBack(incident: Incident) {
+  return incident.events.some(event => event.type === 'rollback_started' || event.type === 'rollback_completed');
+}
+
+function actionSummary(incident: Incident) {
+  const restored = rolledBack(incident);
+  if (incident.status === 'rolling_back') return 'Rolling production back to the previous deploy. The fix starts after that.';
+  if (incident.status === 'remediating' && restored) return 'Production was rolled back. The agent is fixing the bad commit and will open a pull request.';
+  if (incident.status === 'remediating') return 'The agent is fixing the bad commit and will open a pull request.';
+  if (incident.status === 'pr_opened' && restored) return 'Production was rolled back, then a fix pull request was opened. Nothing has been merged.';
+  if (incident.status === 'pr_opened') return 'A pull request is open for review. Nothing has been merged.';
+  if (incident.status === 'recovered' && restored) return 'Production was restored to the previous deploy. The fix follows that rollback.';
+  if (incident.status === 'recovered') return 'Production recovery was verified after the guarded action.';
+  if (incident.status === 'needs_human') return 'Automatic work stopped because the evidence was not safe to act on.';
+  return 'The controller is collecting evidence before taking action.';
+}
+
+function decisionSummary(incident: Incident) {
+  if (rolledBack(incident) && incident.decision === 'fix_pr') return 'Rolled back, then fix PR';
+  if (rolledBack(incident) && incident.status === 'remediating') return 'Rolled back, fix in progress';
+  return incident.decision ? decisionLabels[incident.decision] : 'Pending';
+}
+
 function IncidentCard({ incident, selected, onSelect }: { incident: Incident; selected: boolean; onSelect: () => void }) {
   return (
     <button className={`incident-card${selected ? ' selected' : ''}`} onClick={onSelect} type="button">
       <span className="card-topline"><span>{formatDate(incident.detectedAt)}</span><StatusPill status={incident.status} /></span>
       <strong>{kindLabels[incident.kind]}</strong>
-      <span className="card-meta">{incident.decision ? decisionLabels[incident.decision] : 'Pending'} · {shortSha(incident.commitSha)} · {incident.probePath ?? 'build'}</span>
-      <span className="card-summary">{incident.evidence[0] ?? 'No evidence recorded.'}</span>
+      <span className="card-meta">{decisionSummary(incident)} · {shortSha(incident.commitSha)} · {incident.probePath ?? 'build'}</span>
+      <span className="card-summary">{incident.events.at(-1)?.message ?? incident.evidence[0] ?? 'No evidence recorded.'}</span>
     </button>
   );
 }
@@ -95,7 +118,7 @@ function LiveActivity({ incidentId }: { incidentId: string }) {
     {!run && <p className="activity-empty">
       {mode === 'fixtures'
         ? 'Fixture data only. Run the local controller to watch an agent work.'
-        : 'No agent run for this incident yet. Start one with `bun run --cwd apps/controller start:run -- --incident=' + incidentId + '`.'}
+        : 'No saved agent log for this incident yet. The log stays after the sandbox finishes.'}
     </p>}
     {run && <>
       <p className="activity-now">{events.at(-1)?.message ?? 'Waiting for the first progress event.'}</p>
@@ -112,7 +135,56 @@ function LiveActivity({ incidentId }: { incidentId: string }) {
   </section>;
 }
 
-function Detail({ incident }: { incident: Incident }) {
+type WatchLog = {
+  id: string;
+  level: string;
+  message: string;
+  statusCode?: number;
+  timestamp: number;
+  isError: boolean;
+};
+
+function WatchTelemetry({ watch }: { watch: WatchState | null }) {
+  const probe = watch?.probe;
+  const logs = watch?.logs ?? [];
+  return <section className="panel telemetry-panel" aria-live="polite">
+    <div className="section-heading">
+      <h2>Production telemetry</h2>
+      <span>probe / 30s · logs / 60s</span>
+    </div>
+    <div className="telemetry-probe">
+      <div>
+        <span className="telemetry-label">Latest probe</span>
+        <strong className={`probe-result ${probe?.result ?? 'unknown'}`}>
+          {probe?.result === 'pass' ? 'Succeeded' : probe?.result === 'fail' ? 'Failed' : 'Waiting'}
+        </strong>
+      </div>
+      <div>
+        <span className="telemetry-label">Response</span>
+        <strong className="mono">{probe?.statusCode ? `HTTP ${probe.statusCode}` : '—'}</strong>
+      </div>
+      <div>
+        <span className="telemetry-label">Checked</span>
+        <strong>{probe ? formatTime(probe.checkedAt) : '—'}</strong>
+      </div>
+    </div>
+    {probe?.result === 'fail' && <p className="probe-error">{probe.evidence}</p>}
+    <div className="log-heading"><strong>Vercel runtime logs</strong><span>{watch?.logsCheckedAt ? `Updated ${formatTime(watch.logsCheckedAt)}` : 'Waiting for first log pull'}</span></div>
+    {watch?.logsError && <p className="telemetry-error" role="status">{watch.logsError}</p>}
+    {!watch && <p className="telemetry-empty">Live telemetry appears when the controller is running.</p>}
+    {watch && !watch.logsError && logs.length === 0 && <p className="telemetry-empty">No runtime logs returned for the current deployment.</p>}
+    {logs.length > 0 && <ol className="runtime-logs">
+      {logs.map(log => <li key={log.id} className={log.isError ? 'runtime-log-error' : ''}>
+        <time dateTime={new Date(log.timestamp).toISOString()}>{formatTime(new Date(log.timestamp).toISOString())}</time>
+        <span className="runtime-log-level">{log.level}</span>
+        {log.statusCode !== undefined && <span className="runtime-log-status">HTTP {log.statusCode}</span>}
+        <p>{log.message}</p>
+      </li>)}
+    </ol>}
+  </section>;
+}
+
+function Detail({ incident, watch }: { incident: Incident; watch: WatchState | null }) {
   const actionLabel = incident.decision === 'fix_pr' ? 'Open pull request' : incident.decision === 'rollback' ? 'View rollback target' : 'View action';
   const detected = incident.events.find(event => event.type === 'detected');
   const decision = incident.events.find(event => event.type === 'decision');
@@ -133,7 +205,7 @@ function Detail({ incident }: { incident: Incident }) {
       </ul>
     </section>
     <section className="signal-grid" aria-label="Incident summary">
-      <div><span>Decision</span><strong>{incident.decision ? decisionLabels[incident.decision] : 'Pending'}</strong></div>
+      <div><span>Decision</span><strong>{decisionSummary(incident)}</strong></div>
       <div><span>Revision</span><strong className="mono">{incident.commitSha ?? '—'}</strong></div>
       <div><span>Probe route</span><strong className="mono">{incident.probePath ?? 'Build status'}</strong></div>
       <div><span>Production host</span><strong className="mono">{hostOf(incident.deploymentUrl)}</strong></div>
@@ -141,18 +213,46 @@ function Detail({ incident }: { incident: Incident }) {
       <div><span>Timeline</span><strong>{incident.events.length} events</strong></div>
     </section>
     <section className="action-banner">
-      <div><span className="eyebrow">Current action</span><h2>{incident.decision ? decisionLabels[incident.decision] : 'Investigation in progress'}</h2><p>{incident.status === 'recovered' ? 'Production recovery was verified after the guarded action.' : incident.status === 'pr_opened' ? 'A pull request is open for review. Nothing has been merged.' : incident.status === 'needs_human' ? 'Automatic work stopped because the evidence was not safe to act on.' : 'The controller is collecting evidence before taking action.'}</p></div>
+      <div><span className="eyebrow">Current action</span><h2>{decisionSummary(incident)}</h2><p>{actionSummary(incident)}</p></div>
       {incident.actionUrl && <a className="action-link" href={incident.actionUrl} target="_blank" rel="noreferrer">{actionLabel}</a>}
     </section>
-    {incident.decision === 'rollback' && <p className="caveat">{rollbackCaveat}</p>}
+    {rolledBack(incident) && <ol className="rollback-steps">
+      <li>Rollback — production moved back to the previous deploy.</li>
+      <li>{incident.status === 'pr_opened' ? 'Fix — a pull request is open for that bad commit.' : incident.status === 'needs_human' ? 'Fix — automatic work stopped and needs a person.' : 'Fix — the agent is working on the bad commit.'}</li>
+    </ol>}
+    {(incident.decision === 'rollback' || rolledBack(incident)) && <p className="caveat">{rollbackCaveat}</p>}
+    <WatchTelemetry watch={watch} />
     <LiveActivity incidentId={incident.id} />
     <div className="detail-columns"><Evidence incident={incident} /><Timeline events={incident.events} /></div>
   </main>;
 }
 
-function LiveWatch() {
+type WatchState = {
+  checkedAt: string | null;
+  outcome: string;
+  detail: string;
+  probePath: string;
+  intervalMs: number;
+  failures?: number;
+  rollbackEnabled?: boolean;
+  probe: { checkedAt: string; result: 'pass' | 'fail' | 'unknown'; evidence: string; statusCode?: number } | null;
+  logs: WatchLog[];
+  logsCheckedAt: string | null;
+  logsError: string | null;
+};
+
+function checkLabel(watch: WatchState | null) {
+  const failures = watch?.failures ?? 0;
+  if (!watch || watch.outcome === 'starting') return 'Waiting for the first check';
+  if (watch.outcome === 'healthy') return 'Production is up';
+  if (watch.outcome === 'failing') return watch.failures == null ? 'Production is failing' : `Failing ${failures} of 3`;
+  if (watch.outcome === 'incident') return 'Incident open';
+  return 'Check did not finish';
+}
+
+function LiveWatch({ onWatch }: { onWatch?: (watch: WatchState) => void }) {
   const [clock, setClock] = useState(() => new Date());
-  const [watch, setWatch] = useState<{ checkedAt: string | null; outcome: string; detail: string; probePath: string; intervalMs: number } | null>(null);
+  const [watch, setWatch] = useState<WatchState | null>(null);
   useEffect(() => {
     const timer = setInterval(() => setClock(new Date()), 1000);
     return () => clearInterval(timer);
@@ -164,7 +264,11 @@ function LiveWatch() {
     async function poll() {
       try {
         const response = await fetch('/api/watch', { headers: { Accept: 'application/json' }, cache: 'no-store', signal: abort.signal });
-        if (response.ok) setWatch(await response.json());
+        if (response.ok) {
+          const next = await response.json() as WatchState;
+          setWatch(next);
+          onWatch?.(next);
+        }
       } catch { /* the next tick retries */ }
       if (!abort.signal.aborted) timer = setTimeout(poll, 2000);
     }
@@ -178,11 +282,41 @@ function LiveWatch() {
     <strong className="live-clock">{time}</strong>
     {mode === 'fixtures'
       ? <span>Rehearsal data · local clock only</span>
-      : <span>{watch?.probePath ?? '/api/tasks'} · {watch?.outcome ?? 'starting'}{age !== null ? ` · checked ${age}s ago` : ''}</span>}
+      : <span>{checkLabel(watch)}{watch?.probePath ? ` · ${watch.probePath}` : ''}{age !== null ? ` · ${age}s ago` : ''}</span>}
   </div>;
 }
 
+function FailureStreak({ watch }: { watch: WatchState | null }) {
+  const known = typeof watch?.failures === 'number';
+  const failures = watch?.outcome === 'healthy' ? 0 : Math.max(0, Math.min(watch?.failures ?? 0, 3));
+  const note = !watch || watch.outcome === 'starting'
+    ? 'Waiting for the first check.'
+    : watch.outcome === 'incident'
+      ? 'Three failures recorded. The incident is open.'
+      : watch.outcome === 'unavailable'
+        ? 'The last check did not finish.'
+        : !known
+          ? 'Failure count arrives after the controller redeploy.'
+          : failures === 0
+            ? 'Production passed. The streak is clear.'
+            : `${failures} of 3 failures. The third starts the rollback or the fix.`;
+  return <section className="streak" aria-label="Consecutive production failures">
+    <div>
+      <p className="eyebrow">Failure streak</p>
+      <strong>{known || watch?.outcome === 'healthy' ? `${failures} / 3` : '—'}</strong>
+      <span>{note}</span>
+    </div>
+    <ol>
+      {[1, 2, 3].map(step => <li key={step} className={failures >= step ? 'hit' : ''}>
+        <span>Fail {step}</span>
+        <em>{failures >= step ? 'Failed' : 'Clear'}</em>
+      </li>)}
+    </ol>
+  </section>;
+}
+
 function Dashboard() {
+  const [watch, setWatch] = useState<WatchState | null>(null);
   const [showSetup, setShowSetup] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
@@ -191,7 +325,8 @@ function Dashboard() {
   const counts = useMemo(() => ({ active: snapshot.incidents.filter(item => !['recovered', 'needs_human', 'pr_opened'].includes(item.status)).length, recovered: snapshot.incidents.filter(item => item.status === 'recovered').length }), [snapshot.incidents]);
 
   return <div className="app-shell">
-    <header className="topbar"><div className="brand"><img className="brand-logo" src="/logo.png" alt="Sentinel logo" /><span>Sentinel <em>deploy watch</em></span></div><div className="topbar-meta"><LiveWatch /><span className={`mode-dot ${mode}`} />{mode === 'fixtures' ? 'Rehearsal data' : 'Live controller'}<button className="refresh" onClick={() => setShowSetup(value => !value)} type="button">Setup</button><button className="refresh" onClick={() => setRefresh(value => value + 1)} type="button">Refresh</button></div></header>
+    <header className="topbar"><div className="brand"><img className="brand-logo" src="/logo.png" alt="Sentinel logo" /><span>Sentinel <em>deploy watch</em></span></div><div className="topbar-meta"><LiveWatch onWatch={setWatch} /><span className={`mode-dot ${mode}`} />{mode === 'fixtures' ? 'Rehearsal data' : 'Live controller'}<button className="refresh" onClick={() => setShowSetup(value => !value)} type="button">Setup</button><button className="refresh" onClick={() => setRefresh(value => value + 1)} type="button">Refresh</button></div></header>
+    <FailureStreak watch={watch} />
     <div className="workspace">
       <aside className="sidebar"><div className="sidebar-heading"><div><p className="eyebrow">Operations</p><h2>Incidents</h2></div><span className="count">{snapshot.incidents.length}</span></div><div className="sidebar-stats"><span><strong>{counts.active}</strong> active</span><span><strong>{counts.recovered}</strong> recovered</span></div>
         {snapshot.loading && <p className="state-message">Loading incident evidence…</p>}
@@ -199,7 +334,7 @@ function Dashboard() {
         {!snapshot.loading && !snapshot.error && snapshot.incidents.length === 0 && <p className="state-message">No incidents recorded yet.</p>}
         <nav className="incident-list" aria-label="Incidents">{snapshot.incidents.map(incident => <IncidentCard key={incident.id} incident={incident} selected={selected?.id === incident.id} onSelect={() => setSelectedId(incident.id)} />)}</nav>
       </aside>
-      {showSetup ? <Setup onClose={() => setShowSetup(false)} /> : selected ? <Detail incident={selected} /> : <main className="empty-detail"><span className="empty-icon">K</span><h1>No incident selected</h1><p>When the controller records an incident, its evidence and recovery path will appear here.</p></main>}
+      {showSetup ? <Setup onClose={() => setShowSetup(false)} /> : selected ? <Detail incident={selected} watch={watch} /> : <main className="empty-detail"><span className="empty-icon">K</span><h1>No incident selected</h1><p>When the controller records an incident, its evidence and recovery path will appear here.</p></main>}
     </div>
   </div>;
 }

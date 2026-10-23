@@ -8,7 +8,7 @@ import { dispatchRun } from './remediation';
 import { startPollingWorker, type PollingWorker } from './worker';
 import { VercelProvider } from './vercel-provider';
 import { CoolifyProvider, RailwayProvider, RenderProvider } from './platform-providers';
-import type { DeploymentProvider } from './monitor';
+import type { DeploymentProvider, RuntimeLog } from './monitor';
 import { createControllerActions, type RemediationConfig } from './actions';
 import { applyStoredSettings, createSettingsApi } from './settings';
 import { disconnectFields, exchangeGithubManifest, githubConnectTarget, githubCredentials, githubStateOk, installationExists, listInstallationRepositories, matchingVercelProject, verifyGithubWebhook } from './github-app';
@@ -108,9 +108,10 @@ if (remediationFlag === 'true') {
   const missing = required.filter(key => !process.env[key]);
   const githubAppReady = Boolean(process.env.GITHUB_APP_ID && process.env.GITHUB_APP_PEM && process.env.GITHUB_INSTALLATION_ID);
   if (!process.env.GITHUB_READ_TOKEN && !githubAppReady) missing.push('GITHUB_READ_TOKEN or a connected GitHub app');
+  if (!process.env.REMEDIATOR_REPOSITORY) missing.push('REMEDIATOR_REPOSITORY');
   if (missing.length) throw new Error(`Remediation requires configuration: ${missing.join(', ')}.`);
   remediation = {
-    repository: process.env.REMEDIATOR_REPOSITORY ?? 'iotserver24/nexathon',
+    repository: process.env.REMEDIATOR_REPOSITORY ?? '',
     setupCommand: process.env.REMEDIATOR_SETUP_COMMAND ?? 'bun install --frozen-lockfile --filter ./apps/sample',
     reproduceCommand: process.env.REMEDIATOR_REPRODUCE_COMMAND ?? 'bun test apps/sample/tests/filter.repro.test.ts',
     testCommand: process.env.REMEDIATOR_TEST_COMMAND ?? 'bun run --cwd apps/sample test',
@@ -129,12 +130,26 @@ if (remediationFlag === 'true') {
     },
   };
 }
-const hub = new ActivityHub();
+const hub = new ActivityHub({
+  saveRun: run => { void Promise.resolve(store.saveAgentRun(run)).catch(() => undefined); },
+  saveEvent: (runId, event) => { void Promise.resolve(store.saveAgentEvent(runId, event)).catch(() => undefined); },
+});
 const actions = createControllerActions({ slackWebhookUrl: process.env.SLACK_WEBHOOK_URL, remediation, settings: store }, hub);
 const incidentApi = createIncidentApi(store);
 const settingsApi = createSettingsApi(store);
 const activityApi = createActivityApi({
   hub,
+  loadRuns: () => Promise.resolve(store.listAgentRuns()),
+  loadRun: id => Promise.resolve(store.getAgentRun(id)).then(run => run && {
+    ...run,
+    events: run.events.flatMap(event => {
+      const phase = event.phase;
+      const kind = event.kind;
+      if (!['sandbox', 'checkout', 'setup', 'reproduction', 'agent', 'verification', 'patch'].includes(phase)) return [];
+      if (!['stage', 'tool', 'message', 'usage', 'status'].includes(kind)) return [];
+      return [{ seq: event.seq, at: event.at, phase: phase as 'agent', kind: kind as 'status', message: event.message }];
+    }),
+  }),
   lookupIncident: id => store.get(id),
   dispatch: (runId, incident, source) => dispatchRun(hub, runId, incident, source, remediation),
   token: process.env.NEXATHON_RUN_TOKEN,
@@ -147,10 +162,17 @@ const watch = {
   probePath: monitorConfig?.probePath ?? '/api/tasks',
   rollbackEnabled: Boolean(monitorConfig?.rollbackEnabled),
   intervalMs: monitorConfig?.pollIntervalMs ?? 30_000,
+  failures: 0,
+  probe: null as { checkedAt: string; result: 'pass' | 'fail' | 'unknown'; evidence: string; statusCode?: number } | null,
+  logs: [] as RuntimeLog[],
+  logsCheckedAt: null as string | null,
+  logsError: null as string | null,
 };
 
 let vercelDevice: { code: string; expiresAt: number } | undefined;
 let monitorWorker: PollingWorker | undefined;
+let logsTimer: ReturnType<typeof setInterval> | undefined;
+let logsRefreshing = false;
 
 function dashboardOrigin(): string {
   const configured = process.env.DASHBOARD_ORIGIN ?? 'http://127.0.0.1:5173';
@@ -177,13 +199,24 @@ function launchMonitor(config: MonitorConfig): void {
     deploymentStatusIntervalMs: config.deploymentStatusIntervalMs,
     onResult: (_, result) => {
       watch.checkedAt = new Date().toISOString();
+      if (result.probe) {
+        watch.probe = {
+          checkedAt: watch.checkedAt,
+          result: result.probe.result,
+          evidence: result.probe.evidence,
+          ...(result.probe.statusCode !== undefined ? { statusCode: result.probe.statusCode } : {}),
+        };
+      }
       if (result.action === 'monitor') {
+        watch.failures = result.consecutiveFailures;
         watch.outcome = result.consecutiveFailures > 0 ? 'failing' : 'healthy';
         watch.detail = result.reason;
       } else if (result.action === 'incident') {
+        watch.failures = 3;
         watch.outcome = 'incident';
         watch.detail = `${result.incident.status}: ${result.incident.evidence[0] ?? 'Incident recorded.'}`;
       } else {
+        watch.failures = 0;
         watch.outcome = 'unavailable';
         watch.detail = result.reason;
         console.error(`Controller monitor unavailable: ${result.reason}`);
@@ -199,7 +232,34 @@ function launchMonitor(config: MonitorConfig): void {
       console.error('Controller monitor cycle failed.');
     },
   });
+  if (config.provider.getRuntimeLogs) {
+    const refreshLogs = async () => {
+      if (logsRefreshing) return;
+      logsRefreshing = true;
+      try {
+        const current = await config.provider.getProductionDeployment(config.projectId);
+        if (!current) throw new Error('No current production deployment is available.');
+        watch.logs = await config.provider.getRuntimeLogs!(config.projectId, current.id);
+        watch.logsCheckedAt = new Date().toISOString();
+        watch.logsError = null;
+      } catch (error) {
+        watch.logsCheckedAt = new Date().toISOString();
+        watch.logsError = error instanceof Error ? error.message : 'Runtime logs could not be retrieved.';
+      } finally {
+        logsRefreshing = false;
+      }
+    };
+    void refreshLogs();
+    logsTimer = setInterval(() => { void refreshLogs(); }, 60_000);
+  }
   console.info(`Monitoring enabled for configured ${config.platform} service ${config.projectId}; rollback ${config.rollbackEnabled ? 'enabled' : 'disabled'}.`);
+}
+
+async function stopMonitor(): Promise<void> {
+  if (logsTimer) clearInterval(logsTimer);
+  logsTimer = undefined;
+  await monitorWorker?.stop();
+  monitorWorker = undefined;
 }
 
 async function integrationRoutes(request: Request, settingsStore: typeof store): Promise<Response | null> {
@@ -261,18 +321,21 @@ async function integrationRoutes(request: Request, settingsStore: typeof store):
     await applyStoredSettings(settingsStore);
     const token = process.env.VERCEL_ACCESS_TOKEN;
     if (!token) return Response.json({ error: 'Connect Vercel before listing projects.' }, { status: 409 });
-    const team = process.env.VERCEL_TEAM_ID ? `?teamId=${encodeURIComponent(process.env.VERCEL_TEAM_ID)}` : '';
+    const headers = { Authorization: `Bearer ${token}` };
     try {
-      const response = await fetch(`https://api.vercel.com/v9/projects${team}`, { headers: { Authorization: `Bearer ${token}` } });
+      let response = await fetch('https://api.vercel.com/v9/projects', { headers });
+      if (!response.ok && process.env.VERCEL_TEAM_ID) {
+        response = await fetch(`https://api.vercel.com/v9/projects?teamId=${encodeURIComponent(process.env.VERCEL_TEAM_ID)}`, { headers });
+      }
       if (!response.ok) return Response.json({ error: 'Vercel did not list projects.' }, { status: 502 });
-      const body = await response.json() as { projects?: { id?: string; name?: string; alias?: { domain?: string }[]; targets?: { production?: { alias?: string[] } } }[] };
+      const body = await response.json() as { projects?: { id?: string; name?: string; accountId?: string; alias?: { domain?: string }[]; targets?: { production?: { alias?: string[] } } }[] };
       const projects = (body.projects ?? []).flatMap(project => {
         if (!project.id || !project.name) return [];
         const domains = [
           ...(project.targets?.production?.alias ?? []),
           ...(project.alias ?? []).flatMap(alias => alias.domain ? [alias.domain] : []),
         ];
-        return [{ id: project.id, name: project.name, domains }];
+        return [{ id: project.id, name: project.name, domains, teamId: project.accountId?.startsWith('team_') ? project.accountId : '' }];
       });
       const selected = matchingVercelProject(projects, process.env.VERCEL_PRODUCTION_DOMAIN ?? '');
       return Response.json({ projects, selected });
@@ -289,8 +352,7 @@ async function integrationRoutes(request: Request, settingsStore: typeof store):
     await settingsStore.deleteSettings(keys);
     for (const key of keys) delete process.env[key];
     if (provider === 'vercel') {
-      await monitorWorker?.stop();
-      monitorWorker = undefined;
+      await stopMonitor();
       process.env.CONTROLLER_MONITOR_ENABLED = 'false';
       await settingsStore.writeSettings({ CONTROLLER_MONITOR_ENABLED: 'false' });
     }
@@ -371,7 +433,7 @@ let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  await monitorWorker?.stop();
+  await stopMonitor();
   server.stop();
   await store.close();
 }

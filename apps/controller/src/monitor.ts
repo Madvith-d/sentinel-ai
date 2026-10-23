@@ -14,6 +14,16 @@ export interface Deployment {
 export interface ProbeResponse {
   result: 'pass' | 'fail' | 'unknown';
   evidence: string;
+  statusCode?: number;
+}
+
+export interface RuntimeLog {
+  id: string;
+  level: string;
+  message: string;
+  statusCode?: number;
+  timestamp: number;
+  isError: boolean;
 }
 
 export type DeploymentState = 'QUEUED' | 'BUILDING' | 'READY' | 'ERROR' | 'CANCELED' | 'UNKNOWN';
@@ -35,6 +45,8 @@ export interface DeploymentProvider {
   probeProduction(projectId: string, probePath: string): Promise<ProbeResponse>;
   /** Short, redacted-at-the-boundary diagnostic lines for an incident deployment. */
   getDeploymentLogs?(projectId: string, deploymentId: string): Promise<string[]>;
+  /** Bounded, redacted runtime logs for the dashboard watch surface. */
+  getRuntimeLogs?(projectId: string, deploymentId: string): Promise<RuntimeLog[]>;
   /** Provider-owned host allowlist for deployment URLs returned by its API. */
   isSafeDeploymentUrl?(url: string): boolean;
 }
@@ -66,9 +78,9 @@ export interface MonitorOptions {
 }
 
 export type MonitorResult =
-  | { action: 'monitor'; consecutiveFailures: number; reason: string }
-  | { action: 'incident'; incident: Incident; duplicate?: boolean; updated?: boolean }
-  | { action: 'unavailable'; reason: string };
+  | { action: 'monitor'; consecutiveFailures: number; reason: string; probe?: ProbeResponse }
+  | { action: 'incident'; incident: Incident; duplicate?: boolean; updated?: boolean; probe?: ProbeResponse }
+  | { action: 'unavailable'; reason: string; probe?: ProbeResponse };
 
 const defaultWait = (milliseconds: number) => new Promise<void>(resolve => setTimeout(resolve, milliseconds));
 const maxEvidenceLength = 600;
@@ -280,11 +292,13 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
   if (!currentUrl) return { action: 'unavailable', reason: 'Provider returned an invalid immutable deployment URL.' };
 
   let currentProbe: ProbeResult = 'unknown';
-  let currentEvidence = 'Probe did not return a result.';
+  let currentResponse: ProbeResponse = { result: 'unknown', evidence: 'Probe did not return a result.' };
+  let currentEvidence = currentResponse.evidence;
   try {
     // Judge health on the public production hostname. Immutable *.vercel.app
     // URLs can return 401 from Deployment Protection while the public alias is healthy.
     const result = await options.provider.probeProduction(options.projectId, probePath);
+    currentResponse = result;
     currentProbe = result.result;
     currentEvidence = evidence(result.evidence);
   } catch {
@@ -298,6 +312,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
       action: 'monitor',
       consecutiveFailures: 0,
       reason: currentProbe === 'pass' ? 'The current deployment probe passed.' : 'Probe result is unknown; the failure streak was reset.',
+      probe: currentResponse,
     };
   }
   if (streak.consecutiveFailures < 3 || !streak.firstFailureAt) {
@@ -305,6 +320,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
       action: 'monitor',
       consecutiveFailures: streak.consecutiveFailures,
       reason: 'Waiting for three consecutive failures of the same probe.',
+      probe: currentResponse,
     };
   }
 
@@ -348,9 +364,9 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
       existing.events.push(event(now().toISOString(), 'remediation_retry', 'Retrying the fix. The previous attempt stopped before a pull request.'));
       await options.store.save(existing);
       await finishRemediation(existing, options);
-      return { action: 'incident', incident: existing, duplicate: true, updated: true };
+      return { action: 'incident', incident: existing, duplicate: true, updated: true, probe: currentResponse };
     }
-    return { action: 'incident', incident: existing, duplicate: true, updated };
+    return { action: 'incident', incident: existing, duplicate: true, updated, probe: currentResponse };
   }
 
   let previous: Deployment | null = null;
@@ -429,7 +445,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
 
   if (decision.action !== 'rollback') {
     await finishRemediation(incident, options);
-    return { action: 'incident', incident };
+    return { action: 'incident', incident, probe: currentResponse };
   }
 
   await options.store.save(incident);
@@ -439,7 +455,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
     incident.evidence.push('A rollback attempt was already recorded for this deployment; no repeat action was made.');
     incident.events.push(event(now().toISOString(), 'escalation', 'Rollback attempt guard prevented another action.'));
     await saveAndNotify(incident, options);
-    return { action: 'incident', incident };
+    return { action: 'incident', incident, probe: currentResponse };
   }
 
   incident.status = 'rolling_back';
@@ -457,7 +473,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
     incident.evidence.push(evidence(`Rollback request failed: ${String(error)}`));
     incident.events.push(event(now().toISOString(), 'escalation', 'Rollback request failed; no retry will be attempted.'));
     await saveAndNotify(incident, options);
-    return { action: 'incident', incident };
+    return { action: 'incident', incident, probe: currentResponse };
   }
 
   const attempts = Math.max(1, Math.min(Math.trunc(options.recoveryAttempts ?? 3), 5));
@@ -494,5 +510,5 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
   } else {
     await saveAndNotify(incident, options);
   }
-  return { action: 'incident', incident };
+  return { action: 'incident', incident, probe: currentResponse };
 }

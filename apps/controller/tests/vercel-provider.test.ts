@@ -37,6 +37,12 @@ function mockProvider() {
     if (url.pathname === '/v13/deployments/dpl_previous') return Response.json(previousDeployment);
     if (url.pathname === '/v6/deployments') return Response.json({ deployments: [currentDeployment, previousDeployment] });
     if (url.pathname === '/v7/deployments') return Response.json({ deployments: [currentDeployment, previousDeployment] });
+    if (url.pathname === '/v1/projects/prj_demo/deployments/dpl_current/runtime-logs') {
+      return new Response([
+        JSON.stringify({ rowId: 'log-1', level: 'info', message: 'request completed', responseStatusCode: 200, timestampInMs: 1 }),
+        JSON.stringify({ rowId: 'log-2', level: 'error', message: 'database password=secret', responseStatusCode: 500, timestampInMs: 2 }),
+      ].join('\n'), { headers: { 'Content-Type': 'application/json' } });
+    }
     if (url.pathname === '/v1/projects/prj_demo/rollback/dpl_previous') return Response.json({}, { status: 201 });
     return new Response(null, { status: 404 });
   }) as typeof fetch;
@@ -119,5 +125,16 @@ describe('VercelProvider', () => {
     expect(calls.length).toBe(original + 1);
     expect(status?.id).toBe('dpl_current');
     expect(status?.state).toBe('READY');
+  });
+
+  it('reads bounded runtime logs and marks error responses without leaking secrets', async () => {
+    const { provider, calls } = mockProvider();
+    const logs = await provider.getRuntimeLogs(projectId, 'dpl_current');
+    expect(logs).toEqual([
+      { id: 'log-1', level: 'info', message: 'request completed', statusCode: 200, timestamp: 1, isError: false },
+      { id: 'log-2', level: 'error', message: 'database password=[REDACTED]', statusCode: 500, timestamp: 2, isError: true },
+    ]);
+    expect(calls.some(call => call.url.pathname === '/v1/projects/prj_demo/deployments/dpl_current/runtime-logs'
+      && call.url.searchParams.get('teamId') === null)).toBe(true);
   });
 });

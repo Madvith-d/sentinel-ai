@@ -1,4 +1,6 @@
 import type { Deployment, DeploymentProvider, DeploymentState, DeploymentStatus, ProbeResponse } from './monitor';
+import { redact } from '@nexathon/notifier/format';
+import type { RuntimeLog } from './monitor';
 
 const apiBase = 'https://api.vercel.com';
 
@@ -164,6 +166,33 @@ export class VercelProvider implements DeploymentProvider {
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0] ?? null;
   }
 
+  async getRuntimeLogs(projectId: string, deploymentId: string): Promise<RuntimeLog[]> {
+    this.assertProject(projectId);
+    if (!deploymentId.trim()) throw new Error('Vercel deployment ID is required.');
+    const response = await this.request(this.apiUrl(
+      `/v1/projects/${encodeURIComponent(this.options.projectId)}/deployments/${encodeURIComponent(deploymentId)}/runtime-logs`,
+    ));
+    const raw = await response.text();
+    const values = parseLogStream(raw);
+    return values.flatMap((value, index) => {
+      const item = object(value);
+      const message = text(item?.message);
+      const id = text(item?.rowId) ?? text(item?.id) ?? `${deploymentId}-${index}`;
+      const level = text(item?.level) ?? 'info';
+      const timestamp = typeof item?.timestampInMs === 'number' ? item.timestampInMs : Date.now();
+      const statusCode = typeof item?.responseStatusCode === 'number' ? item.responseStatusCode : undefined;
+      if (!message) return [];
+      return [{
+        id,
+        level,
+        message: redact(message, 600),
+        ...(statusCode !== undefined ? { statusCode } : {}),
+        timestamp,
+        isError: level === 'error' || level === 'fatal' || (statusCode !== undefined && statusCode >= 500),
+      }];
+    }).slice(-50);
+  }
+
   async getPreviousDeployment(projectId: string, deploymentId: string): Promise<Deployment | null> {
     this.assertProject(projectId);
     const current = await this.getDeployment(deploymentId);
@@ -233,10 +262,24 @@ export class VercelProvider implements DeploymentProvider {
       return {
         result,
         evidence: `HTTP ${status} from ${url.hostname}${url.pathname}`,
+        statusCode: status,
       };
     } catch {
       throw new Error('Deployment probe failed or timed out.');
     }
+  }
+}
+
+function parseLogStream(raw: string): unknown[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return trimmed.split(/\r?\n/).flatMap(line => {
+      try { return [JSON.parse(line) as unknown]; } catch { return []; }
+    });
   }
 }
 
