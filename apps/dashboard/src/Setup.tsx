@@ -22,6 +22,8 @@ export function Setup({ onClose }: { onClose: () => void }) {
   const [repos, setRepos] = useState<string[]>([]);
   const [projects, setProjects] = useState<{ id: string; name: string; domains: string[] }[]>([]);
   const [monitorNote, setMonitorNote] = useState('');
+  const [githubListNote, setGithubListNote] = useState('Repository list has not loaded.');
+  const [vercelListNote, setVercelListNote] = useState('Project list has not loaded.');
 
   const loadSettings = useCallback(async (signal?: AbortSignal) => {
     const response = await fetch('/api/settings', { headers: { Accept: 'application/json' }, signal });
@@ -46,29 +48,37 @@ export function Setup({ onClose }: { onClose: () => void }) {
   const monitorOn = field.get('CONTROLLER_MONITOR_ENABLED')?.value === 'true';
 
   useEffect(() => {
-    if (!githubReady) return;
+    if (!fields.length) return;
+    if (!githubReady) { setGithubListNote('GitHub access is not connected, so there is no repository list.'); return; }
     const abort = new AbortController();
     void fetch('/api/github/repos', { headers: { Accept: 'application/json' }, signal: abort.signal })
-      .then(response => response.ok ? response.json() : { repositories: [] })
-      .then(body => setRepos((body as { repositories?: string[] }).repositories ?? []))
-      .catch(() => undefined);
+      .then(async response => {
+        const body = await response.json().catch(() => ({})) as { repositories?: string[]; error?: string };
+        if (!response.ok) { setGithubListNote(body.error || `Repository list failed (${response.status}).`); return; }
+        const names = body.repositories ?? [];
+        setRepos(names);
+        setGithubListNote(names.length ? `${names.length} repositories from the bot install.` : 'The bot is connected and has no repositories.');
+      })
+      .catch(() => { if (!abort.signal.aborted) setGithubListNote('Repository list did not load.'); });
     return () => abort.abort();
-  }, [githubReady]);
+  }, [fields.length, githubReady]);
 
   useEffect(() => {
-    if (!vercelReady) return;
+    if (!fields.length) return;
+    if (!vercelReady) { setVercelListNote('Vercel is not connected, so there is no project list.'); return; }
     const abort = new AbortController();
     void fetch('/api/vercel/projects', { headers: { Accept: 'application/json' }, signal: abort.signal })
-      .then(response => response.ok ? response.json() : { projects: [] })
-      .then(body => {
-        const listed = (body as { projects?: { id: string; name: string; domains: string[] }[]; selected?: string | null }).projects ?? [];
+      .then(async response => {
+        const body = await response.json().catch(() => ({})) as { projects?: { id: string; name: string; domains: string[] }[]; selected?: string | null; error?: string };
+        if (!response.ok) { setVercelListNote(body.error || `Project list failed (${response.status}).`); return; }
+        const listed = body.projects ?? [];
         setProjects(listed);
-        const selected = (body as { selected?: string | null }).selected;
-        if (selected) setDraft(current => ({ ...current, VERCEL_PROJECT_ID: current.VERCEL_PROJECT_ID || selected }));
+        setVercelListNote(listed.length ? `${listed.length} Vercel projects.` : 'Vercel is connected and returned no projects.');
+        if (body.selected) setDraft(current => ({ ...current, VERCEL_PROJECT_ID: current.VERCEL_PROJECT_ID || body.selected || '' }));
       })
-      .catch(() => undefined);
+      .catch(() => { if (!abort.signal.aborted) setVercelListNote('Project list did not load.'); });
     return () => abort.abort();
-  }, [vercelReady]);
+  }, [fields.length, vercelReady]);
   const groups = [...new Set(fields.map(item => item.group).filter(group => group !== 'Vercel'))];
   const setValue = (key: string, value: string) => setDraft(current => ({ ...current, [key]: value }));
 
@@ -173,7 +183,8 @@ export function Setup({ onClose }: { onClose: () => void }) {
         <div className="provider-mark provider-github" aria-hidden="true">GH</div>
         <div>
           <h2>GitHub bot</h2>
-          <p>{githubReady ? `Connected to ${botSlug}.` : `Use the existing bot ${botSlug}. This does not create a new app.`}</p>
+          <p className={githubReady ? 'connection-ok' : 'connection-off'}>{githubReady ? `GitHub connected · ${botSlug}` : 'GitHub not connected'}</p>
+          <p>{githubListNote}</p>
         </div>
       </div>
       {field.get('GITHUB_APP_ID')?.configured
@@ -187,6 +198,7 @@ export function Setup({ onClose }: { onClose: () => void }) {
         <span>Repository</span>
         <select value={draft.REMEDIATOR_REPOSITORY ?? ''} onChange={event => void choose('REMEDIATOR_REPOSITORY', event.target.value)}>
           <option value="">Choose a repository</option>
+          {draft.REMEDIATOR_REPOSITORY && !repos.includes(draft.REMEDIATOR_REPOSITORY) && <option value={draft.REMEDIATOR_REPOSITORY}>{draft.REMEDIATOR_REPOSITORY}</option>}
           {repos.map(repo => <option key={repo} value={repo}>{repo}</option>)}
         </select>
       </label>
@@ -198,7 +210,8 @@ export function Setup({ onClose }: { onClose: () => void }) {
         <div>
           <div className="section-kicker"><span className="status-dot status-dot-warn" /> Primary provider</div>
           <h2 id="vercel-title">Production link and Vercel</h2>
-          <p>{vercelReady ? 'Vercel is connected.' : 'Paste the public site link, then connect Vercel. The matching project is selected when its domain matches the link.'}</p>
+          <p className={vercelReady ? 'connection-ok' : 'connection-off'}>{vercelReady ? 'Vercel connected' : 'Vercel not connected'}</p>
+          <p>{vercelListNote} Paste the public site link and the matching project is selected.</p>
         </div>
       </div>
       <div className="setup-hero-actions">
@@ -209,6 +222,7 @@ export function Setup({ onClose }: { onClose: () => void }) {
         <span>Vercel project</span>
         <select value={draft.VERCEL_PROJECT_ID ?? ''} onChange={event => void choose('VERCEL_PROJECT_ID', event.target.value)}>
           <option value="">Choose a project</option>
+          {draft.VERCEL_PROJECT_ID && !projects.some(project => project.id === draft.VERCEL_PROJECT_ID) && <option value={draft.VERCEL_PROJECT_ID}>{draft.VERCEL_PROJECT_ID}</option>}
           {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
         </select>
       </label>

@@ -59,13 +59,14 @@ export function verifyGithubWebhook(body: string, signature: string | null, secr
 }
 
 export function appJwt(appId: string, pem: string, now = Date.now()): string {
+  const key = pem.includes('\\n') ? pem.replaceAll('\\n', '\n') : pem;
   const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
   const issued = Math.floor(now / 1000);
   const payload = base64url(JSON.stringify({ iat: issued - 60, exp: issued + 540, iss: appId }));
   const data = `${header}.${payload}`;
   const signer = createSign('RSA-SHA256');
   signer.update(data);
-  return `${data}.${signer.sign(pem).toString('base64url')}`;
+  return `${data}.${signer.sign(key).toString('base64url')}`;
 }
 
 export function githubConnectTarget(slug: string | undefined, appId: string | undefined): { redirect: string } | { error: string } {
