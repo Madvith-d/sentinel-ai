@@ -381,7 +381,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
     incident.decision = 'escalate';
     incident.evidence.push('A rollback attempt was already recorded for this deployment; no repeat action was made.');
     incident.events.push(event(now().toISOString(), 'escalation', 'Rollback attempt guard prevented another action.'));
-    options.store.save(incident);
+    await saveAndNotify(incident, options);
     return { action: 'incident', incident };
   }
 
@@ -399,7 +399,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
     incident.decision = 'escalate';
     incident.evidence.push(evidence(`Rollback request failed: ${String(error)}`));
     incident.events.push(event(now().toISOString(), 'escalation', 'Rollback request failed; no retry will be attempted.'));
-    options.store.save(incident);
+    await saveAndNotify(incident, options);
     return { action: 'incident', incident };
   }
 
@@ -431,6 +431,6 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
     incident.evidence.push(evidence(`Rollback recovery verification failed: ${verificationEvidence}`));
     incident.events.push(event(now().toISOString(), 'escalation', 'Recovery was not verified; no additional rollback will be attempted.'));
   }
-  options.store.save(incident);
+  await saveAndNotify(incident, options);
   return { action: 'incident', incident };
 }
