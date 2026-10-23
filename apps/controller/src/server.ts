@@ -81,8 +81,10 @@ if (monitorFlag === 'true') {
 const store = new IncidentStore(databasePath);
 let remediation: RemediationConfig | undefined;
 if (remediationFlag === 'true') {
-  const required = ['REMEDIATOR_MODEL_ID', 'REMEDIATOR_MODEL_BASE_URL', 'REMEDIATOR_MODEL_API_KEY', 'GITHUB_READ_TOKEN', 'E2B_REMEDIATOR_TEMPLATE'];
+  const required = ['REMEDIATOR_MODEL_ID', 'REMEDIATOR_MODEL_BASE_URL', 'REMEDIATOR_MODEL_API_KEY', 'E2B_REMEDIATOR_TEMPLATE'];
   const missing = required.filter(key => !process.env[key]);
+  const githubAppReady = Boolean(process.env.GITHUB_APP_ID && process.env.GITHUB_APP_PEM && process.env.GITHUB_INSTALLATION_ID);
+  if (!process.env.GITHUB_READ_TOKEN && !githubAppReady) missing.push('GITHUB_READ_TOKEN or a connected GitHub app');
   if (missing.length) throw new Error(`Remediation requires configuration: ${missing.join(', ')}.`);
   remediation = {
     repository: process.env.REMEDIATOR_REPOSITORY ?? 'iotserver24/nexathon',
@@ -96,7 +98,7 @@ if (remediationFlag === 'true') {
       baseUrl: process.env.REMEDIATOR_MODEL_BASE_URL!,
       apiBackend: (process.env.REMEDIATOR_MODEL_API_BACKEND ?? 'responses') as RemediationConfig['provider']['apiBackend'],
       apiKey: process.env.REMEDIATOR_MODEL_API_KEY!,
-      githubReadToken: process.env.GITHUB_READ_TOKEN!,
+      githubReadToken: process.env.GITHUB_READ_TOKEN ?? 'github-app',
     },
     reproductionFixture: {
       path: process.env.REMEDIATOR_FIXTURE_PATH ?? 'apps/sample/tests/filter.repro.test.ts',
