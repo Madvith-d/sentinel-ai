@@ -43,13 +43,16 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
   validateRequest(request);
   validateProvider(provider);
   if (!process.env.E2B_API_KEY) throw new Error('E2B_API_KEY is required on the controller');
+  const template = process.env.E2B_REMEDIATOR_TEMPLATE;
+  if (!template) throw new Error('E2B_REMEDIATOR_TEMPLATE is required; the default base sandbox cannot install/build the sample app');
 
   let sandbox: Sandbox | undefined;
   try {
-    sandbox = await Sandbox.create({
+    const options = {
       timeoutMs: 600_000,
       metadata: { purpose: 'nexathon-remediation', incident: request.incidentId },
-    });
+    };
+    sandbox = await Sandbox.create(template, options);
     await checked(sandbox, `git clone --no-checkout --filter=blob:none ${shellQuote(`https://github.com/${request.repository}.git`)} ${REPO_DIR}`, 90_000);
     await checked(sandbox, `git checkout --detach ${shellQuote(request.commitSha)}`, 60_000, REPO_DIR);
     const head = (await checked(sandbox, 'git rev-parse HEAD', 10_000, REPO_DIR)).stdout.trim();

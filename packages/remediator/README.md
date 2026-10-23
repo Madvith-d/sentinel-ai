@@ -4,7 +4,7 @@ Bun/TypeScript package for the **fix-PR path only**. The trusted local controlle
 
 ## Implemented
 
-- Creates a 10-minute E2B sandbox, clones the allowlisted public `iotserver24/nexathon` repo at an exact 40-character SHA, installs **Bun 1.3.11** and runs the configured setup command.
+- Creates a 10-minute E2B sandbox from the configured 4 GiB+ custom template, clones the allowlisted public `iotserver24/nexathon` repo at an exact 40-character SHA, installs **Bun 1.3.11** and runs the configured setup command.
 - Requires the reproduction command to fail *before* any patch. Installs verified published **Supercharge CLI 1.3.30** in the sandbox (the hosted installer currently needs `SUPERCHARGE_GITHUB_REPO=iotserver24/supercharge-releases`). Configures a dedicated model provider and GitHub's remote MCP in read-only mode using a separate read-only token.
 - Runs Supercharge headlessly with a prompt file, automatic tool approval **only inside E2B**, no subagents, an 18-turn cap, and a 270-second command cap. Files from GitHub, PRs and logs are untrusted inputs. Limits edited files to `apps/sample/`.
 - Runs reproduction, all tests, and build again. Returns a bounded unified patch plus redacted evidence; refuses empty, binary, symlink, secret-bearing, outside-path, failed-test, or failed-build changes. Destroys the sandbox in `finally`.
@@ -19,11 +19,13 @@ bun install
 bun run --cwd packages/remediator typecheck
 bun test --cwd packages/remediator
 bun run --cwd packages/remediator smoke:e2b
-SMOKE_INSTALL_BUN=1 SMOKE_INSTALL_SUPERCHARGE=1 SMOKE_MCP_CONFIG=1 \
-  SMOKE_CLONE_SHA=$(git rev-parse HEAD) bun run --cwd packages/remediator smoke:e2b
+E2B_REMEDIATOR_TEMPLATE=iotserver24/zns-bench-2cpu-4gb \
+  SMOKE_INSTALL_BUN=1 SMOKE_INSTALL_SUPERCHARGE=1 SMOKE_MCP_CONFIG=1 \
+  SMOKE_INSTALL_TARGET=sample SMOKE_CLONE_SHA=$(git rev-parse HEAD) \
+  bun run --cwd packages/remediator smoke:e2b
 ```
 
-The last two commands create a short-lived **real E2B sandbox** and require `E2B_API_KEY`. The extended smoke test clones the exact pushed SHA, installs the whole Bun workspace, runs remediator typecheck/tests, and checks that published Supercharge parses its GitHub MCP configuration with a **dummy** token. It does not authenticate to GitHub MCP, call a model, or open a PR. A full fix run also needs a sample app, a failing test, a dedicated provider key, and a read-only GitHub MCP credential.
+The last two commands create a short-lived **real E2B sandbox** and require `E2B_API_KEY`. The extended smoke test clones the exact pushed SHA, installs only the sample workspace, runs sample tests/build, verifies the Next build output, and checks that published Supercharge parses its GitHub MCP configuration with a **dummy** token. A separate remediator-only smoke is available by omitting `SMOKE_INSTALL_TARGET=sample`. It does not authenticate to GitHub MCP, call a model, or open a PR. A full fix run also needs a sample app, a failing test, a dedicated provider key, and a read-only GitHub MCP credential.
 
 ## Controller integration
 
@@ -37,9 +39,9 @@ const request = {
   repository: 'iotserver24/nexathon',
   commitSha: incident.commitSha, // exact 40-character SHA
   evidence: incident.evidence,   // redact and bound before dispatch
-  setupCommand: 'bun install --frozen-lockfile',
+  setupCommand: 'bun install --frozen-lockfile --filter ./apps/sample',
   reproduceCommand: 'bun test apps/sample/tests/repro.test.ts',
-  testCommand: 'bun test',
+  testCommand: 'bun run --cwd apps/sample test',
   buildCommand: 'bun run --cwd apps/sample build',
 };
 
@@ -59,6 +61,8 @@ if (fix.ok) {
   // Persist fix.reason + fix.message and escalate; never open an unverified PR.
 }
 ```
+
+`E2B_REMEDIATOR_TEMPLATE` is required on the controller. The default E2B base sandbox was killed (exit 137) by the sample app dependency install; the account's existing `iotserver24/zns-bench-2cpu-4gb` 4 GiB template passed a filtered sample install, tests, and build. Do not use the default base template for a fix run.
 
 `setupCommand`, `reproduceCommand`, `testCommand`, and `buildCommand` must be **trusted project configuration**, not text taken from an alert, PR, or model output. `publishDraftPr` requires `GH_TOKEN` with Contents and Pull requests write access scoped to this repo; `GITHUB_READ_TOKEN` must be separate and read-only. Keep both and the provider key in local secrets, not `.env` committed to Git. GitHub MCP configuration uses `X-MCP-Readonly: true`, but the token itself should also have minimum permissions.
 

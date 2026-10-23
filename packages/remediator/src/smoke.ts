@@ -5,7 +5,9 @@ if (!process.env.E2B_API_KEY) {
   console.error('E2B_API_KEY is required');
   process.exitCode = 1;
 } else {
-  const sandbox = await Sandbox.create({ timeoutMs: 120_000, metadata: { purpose: 'nexathon-remediator-smoke' } });
+  const options = { timeoutMs: 300_000, metadata: { purpose: 'nexathon-remediator-smoke' } };
+  const template = process.env.E2B_REMEDIATOR_TEMPLATE;
+  const sandbox = template ? await Sandbox.create(template, options) : await Sandbox.create(options);
   try {
     const result = await sandbox.commands.run('uname -m; git --version; curl --version | head -1; echo HOME=$HOME; command -v bun || true; command -v unzip || true', { timeoutMs: 30_000 });
     console.log(result.stdout.trim());
@@ -24,9 +26,13 @@ if (!process.env.E2B_API_KEY) {
       );
       console.log(`cloned repo: ${clone.exitCode === 0 ? 'ok' : 'failed'}`);
       if (process.env.SMOKE_INSTALL_BUN === '1') {
+        const target = process.env.SMOKE_INSTALL_TARGET === 'sample' ? 'sample' : 'remediator';
+        const checks = target === 'sample'
+          ? 'bun install --frozen-lockfile --filter ./apps/sample && bun run --cwd apps/sample test && bun run --cwd apps/sample build && test -f apps/sample/.next/BUILD_ID'
+          : 'bun install --frozen-lockfile --filter ./packages/remediator && bun run --cwd packages/remediator typecheck && bun test --cwd packages/remediator';
         const check = await sandbox.commands.run(
-          'export PATH="$HOME/.bun/bin:$PATH"; bun install --frozen-lockfile && bun run --cwd packages/remediator typecheck && bun test --cwd packages/remediator',
-          { cwd: '/home/user/nexathon', timeoutMs: 180_000 },
+          `export PATH="$HOME/.bun/bin:$PATH"; ${checks}`,
+          { cwd: '/home/user/nexathon', timeoutMs: 240_000 },
         );
         console.log(`${check.stdout}\n${check.stderr}`.trim().split('\n').slice(-12).join('\n'));
       }
