@@ -14,6 +14,15 @@ export function validateRequest(request: RemediationRequest, allowedRepository =
   if (!Array.isArray(request.evidence) || request.evidence.length > 20 || request.evidence.some((line) => typeof line !== 'string' || line.length > 1000)) {
     throw new Error('Evidence must be redacted and bounded');
   }
+  if (request.reproductionFixture) {
+    const { path, content } = request.reproductionFixture;
+    if (typeof path !== 'string' || !/^apps\/sample\/tests\/[A-Za-z0-9._/-]+\.test\.ts$/.test(path) || path.includes('..') || FORBIDDEN_SEGMENTS.test(path)) {
+      throw new Error('Reproduction fixture must be a safe apps/sample/tests/*.test.ts path');
+    }
+    if (typeof content !== 'string' || !content.trim() || Buffer.byteLength(content) > 12_000) {
+      throw new Error('Reproduction fixture must be nonempty and at most 12 KiB');
+    }
+  }
 }
 
 export function validateProvider(config: ProviderConfig): void {

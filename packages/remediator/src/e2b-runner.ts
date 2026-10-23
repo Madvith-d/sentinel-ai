@@ -63,6 +63,12 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
     const setup = await command(sandbox, `export PATH="$HOME/.bun/bin:$PATH"; ${request.setupCommand}`, 180_000, REPO_DIR);
     if (setup.exitCode !== 0) return failure(request, 'setup_failed', 'Project dependency setup failed', redacted(setup.stderr || setup.stdout, provider));
 
+    if (request.reproductionFixture) {
+      const destination = `${REPO_DIR}/${request.reproductionFixture.path}`;
+      const existing = await command(sandbox, `test -e ${shellQuote(destination)}`, 10_000);
+      if (existing.exitCode === 0) return failure(request, 'unsafe_patch', 'Fixture path already exists at the incident SHA');
+      await sandbox.files.write(destination, request.reproductionFixture.content);
+    }
     const baseline = await command(sandbox, `export PATH="$HOME/.bun/bin:$PATH"; ${request.reproduceCommand}`, 120_000, REPO_DIR);
     if (baseline.exitCode === 0) return failure(request, 'not_reproducible', 'Reproduction already passes at the incident SHA; no patch or PR created');
 
@@ -77,6 +83,10 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
       'export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"; supercharge --cwd /home/user/nexathon --prompt-file /home/user/incident-prompt.txt --always-approve --no-subagents --disable-web-search --max-turns 18 --output-format json',
       270_000, REPO_DIR, envs);
     if (agent.exitCode !== 0) return failure(request, 'agent_failed', 'Supercharge failed before a verified patch was available', redacted(agent.stderr || agent.stdout, provider));
+    if (request.reproductionFixture) {
+      const current = await sandbox.files.read(`${REPO_DIR}/${request.reproductionFixture.path}`);
+      if (current !== request.reproductionFixture.content) return failure(request, 'unsafe_patch', 'Agent modified the trusted regression test');
+    }
 
     const changed = await checked(sandbox,
       'git diff --name-only -z HEAD; git ls-files --others --exclude-standard -z', 15_000, REPO_DIR);

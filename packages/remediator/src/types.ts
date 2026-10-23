@@ -8,6 +8,8 @@ export interface RemediationRequest {
   reproduceCommand: string;
   testCommand: string;
   buildCommand: string;
+  /** Trusted regression test uploaded into E2B before baseline, included unchanged in the draft PR. */
+  reproductionFixture?: { path: string; content: string };
 }
 
 export interface ProviderConfig {

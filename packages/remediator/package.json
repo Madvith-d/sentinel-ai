@@ -7,7 +7,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
     "smoke:e2b": "bun run src/smoke.ts",
-    "smoke:fixture": "bun run src/fixture-smoke.ts"
+    "smoke:fixture": "bun run src/fixture-smoke.ts",
+    "demo:fix": "bun run src/demo-fix.ts"
   },
   "dependencies": {
     "e2b": "^2.59.0"

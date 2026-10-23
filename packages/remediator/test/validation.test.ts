@@ -25,6 +25,12 @@ describe('controller boundary', () => {
     expect(() => validateRequest({ ...request, repository: 'another/repo' })).toThrow('allowlisted');
     expect(() => validateRequest({ ...request, commitSha: 'main' })).toThrow('40-character');
   });
+  test('accepts a bounded trusted fixture and rejects test-path traversal or oversized content', () => {
+    const reproductionFixture = { path: 'apps/sample/tests/filter.repro.test.ts', content: 'test(\"regression\", () => {});' };
+    expect(() => validateRequest({ ...request, reproductionFixture })).not.toThrow();
+    expect(() => validateRequest({ ...request, reproductionFixture: { ...reproductionFixture, path: 'apps/sample/tests/../../.env.test.ts' } })).toThrow('safe');
+    expect(() => validateRequest({ ...request, reproductionFixture: { ...reproductionFixture, content: 'x'.repeat(12_001) } })).toThrow('12 KiB');
+  });
   test('rejects paths and generated secrets outside the demo target', () => {
     expect(() => validateChangedFiles(['apps/sample/api/health.ts'])).not.toThrow();
     for (const path of ['apps/controller/src/index.ts', 'apps/sample/.env', 'apps/sample/node_modules/x', 'apps/sample/../controller/x']) {
