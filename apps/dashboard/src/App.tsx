@@ -72,7 +72,7 @@ function IncidentCard({ incident, selected, onSelect }: { incident: Incident; se
       <span className="card-topline"><span>{formatDate(incident.detectedAt)}</span><StatusPill status={incident.status} /></span>
       <strong>{kindLabels[incident.kind]}</strong>
       <span className="card-meta">{decisionSummary(incident)} · {shortSha(incident.commitSha)} · {incident.probePath ?? 'build'}</span>
-      <span className="card-summary">{incident.evidence[0] ?? 'No evidence recorded.'}</span>
+      <span className="card-summary">{incident.events.at(-1)?.message ?? incident.evidence[0] ?? 'No evidence recorded.'}</span>
     </button>
   );
 }
@@ -118,7 +118,7 @@ function LiveActivity({ incidentId }: { incidentId: string }) {
     {!run && <p className="activity-empty">
       {mode === 'fixtures'
         ? 'Fixture data only. Run the local controller to watch an agent work.'
-        : 'No agent run is streaming yet. Rollback and fix steps also appear in the incident timeline below.'}
+        : 'No saved agent log for this incident yet. The log stays after the sandbox finishes.'}
     </p>}
     {run && <>
       <p className="activity-now">{events.at(-1)?.message ?? 'Waiting for the first progress event.'}</p>
@@ -177,9 +177,28 @@ function Detail({ incident }: { incident: Incident }) {
   </main>;
 }
 
-function LiveWatch() {
+type WatchState = {
+  checkedAt: string | null;
+  outcome: string;
+  detail: string;
+  probePath: string;
+  intervalMs: number;
+  failures?: number;
+  rollbackEnabled?: boolean;
+};
+
+function checkLabel(watch: WatchState | null) {
+  const failures = watch?.failures ?? 0;
+  if (!watch || watch.outcome === 'starting') return 'Waiting for the first check';
+  if (watch.outcome === 'healthy') return 'Production is up';
+  if (watch.outcome === 'failing') return watch.failures == null ? 'Production is failing' : `Failing ${failures} of 3`;
+  if (watch.outcome === 'incident') return 'Incident open';
+  return 'Check did not finish';
+}
+
+function LiveWatch({ onWatch }: { onWatch?: (watch: WatchState) => void }) {
   const [clock, setClock] = useState(() => new Date());
-  const [watch, setWatch] = useState<{ checkedAt: string | null; outcome: string; detail: string; probePath: string; intervalMs: number } | null>(null);
+  const [watch, setWatch] = useState<WatchState | null>(null);
   useEffect(() => {
     const timer = setInterval(() => setClock(new Date()), 1000);
     return () => clearInterval(timer);
@@ -191,7 +210,11 @@ function LiveWatch() {
     async function poll() {
       try {
         const response = await fetch('/api/watch', { headers: { Accept: 'application/json' }, cache: 'no-store', signal: abort.signal });
-        if (response.ok) setWatch(await response.json());
+        if (response.ok) {
+          const next = await response.json() as WatchState;
+          setWatch(next);
+          onWatch?.(next);
+        }
       } catch { /* the next tick retries */ }
       if (!abort.signal.aborted) timer = setTimeout(poll, 2000);
     }
@@ -205,11 +228,41 @@ function LiveWatch() {
     <strong className="live-clock">{time}</strong>
     {mode === 'fixtures'
       ? <span>Rehearsal data · local clock only</span>
-      : <span>{watch?.probePath ?? '/api/tasks'} · {watch?.outcome ?? 'starting'}{age !== null ? ` · checked ${age}s ago` : ''}</span>}
+      : <span>{checkLabel(watch)}{watch?.probePath ? ` · ${watch.probePath}` : ''}{age !== null ? ` · ${age}s ago` : ''}</span>}
   </div>;
 }
 
+function FailureStreak({ watch }: { watch: WatchState | null }) {
+  const known = typeof watch?.failures === 'number';
+  const failures = watch?.outcome === 'healthy' ? 0 : Math.max(0, Math.min(watch?.failures ?? 0, 3));
+  const note = !watch || watch.outcome === 'starting'
+    ? 'Waiting for the first check.'
+    : watch.outcome === 'incident'
+      ? 'Three failures recorded. The incident is open.'
+      : watch.outcome === 'unavailable'
+        ? 'The last check did not finish.'
+        : !known
+          ? 'Failure count arrives after the controller redeploy.'
+          : failures === 0
+            ? 'Production passed. The streak is clear.'
+            : `${failures} of 3 failures. The third starts the rollback or the fix.`;
+  return <section className="streak" aria-label="Consecutive production failures">
+    <div>
+      <p className="eyebrow">Failure streak</p>
+      <strong>{known || watch?.outcome === 'healthy' ? `${failures} / 3` : '—'}</strong>
+      <span>{note}</span>
+    </div>
+    <ol>
+      {[1, 2, 3].map(step => <li key={step} className={failures >= step ? 'hit' : ''}>
+        <span>Fail {step}</span>
+        <em>{failures >= step ? 'Failed' : 'Clear'}</em>
+      </li>)}
+    </ol>
+  </section>;
+}
+
 function Dashboard() {
+  const [watch, setWatch] = useState<WatchState | null>(null);
   const [showSetup, setShowSetup] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
@@ -218,7 +271,8 @@ function Dashboard() {
   const counts = useMemo(() => ({ active: snapshot.incidents.filter(item => !['recovered', 'needs_human', 'pr_opened'].includes(item.status)).length, recovered: snapshot.incidents.filter(item => item.status === 'recovered').length }), [snapshot.incidents]);
 
   return <div className="app-shell">
-    <header className="topbar"><div className="brand"><img className="brand-logo" src="/logo.png" alt="Sentinel logo" /><span>Sentinel <em>deploy watch</em></span></div><div className="topbar-meta"><LiveWatch /><span className={`mode-dot ${mode}`} />{mode === 'fixtures' ? 'Rehearsal data' : 'Live controller'}<button className="refresh" onClick={() => setShowSetup(value => !value)} type="button">Setup</button><button className="refresh" onClick={() => setRefresh(value => value + 1)} type="button">Refresh</button></div></header>
+    <header className="topbar"><div className="brand"><img className="brand-logo" src="/logo.png" alt="Sentinel logo" /><span>Sentinel <em>deploy watch</em></span></div><div className="topbar-meta"><LiveWatch onWatch={setWatch} /><span className={`mode-dot ${mode}`} />{mode === 'fixtures' ? 'Rehearsal data' : 'Live controller'}<button className="refresh" onClick={() => setShowSetup(value => !value)} type="button">Setup</button><button className="refresh" onClick={() => setRefresh(value => value + 1)} type="button">Refresh</button></div></header>
+    <FailureStreak watch={watch} />
     <div className="workspace">
       <aside className="sidebar"><div className="sidebar-heading"><div><p className="eyebrow">Operations</p><h2>Incidents</h2></div><span className="count">{snapshot.incidents.length}</span></div><div className="sidebar-stats"><span><strong>{counts.active}</strong> active</span><span><strong>{counts.recovered}</strong> recovered</span></div>
         {snapshot.loading && <p className="state-message">Loading incident evidence…</p>}

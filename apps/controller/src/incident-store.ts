@@ -2,11 +2,31 @@ import postgres, { type Sql } from 'postgres';
 import type { Incident } from '@nexathon/contracts';
 
 interface StoredIncident { incident_json: Incident; }
+export interface StoredAgentRun {
+  id: string;
+  incidentId: string;
+  source: 'ai' | 'rehearsal';
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  startedAt: string;
+  finishedAt?: string;
+  outcome?: string;
+  eventCount: number;
+}
+
+export interface StoredAgentEvent {
+  seq: number;
+  at: string;
+  phase: string;
+  kind: string;
+  message: string;
+}
+
 interface MemoryState {
   incidents: Map<string, Incident>;
   probeStreaks: Map<string, { consecutiveFailures: number; firstFailureAt?: string }>;
   rollbackAttempts: Set<string>;
   settings: Map<string, string>;
+  agentRuns: Map<string, StoredAgentRun & { events: StoredAgentEvent[] }>;
 }
 type StoreValue<T> = T | Promise<T>;
 
@@ -16,8 +36,26 @@ function storedIncident(value: unknown): Incident {
   return parsed as Incident;
 }
 
+function agentRunFromRow(row: Record<string, unknown>): StoredAgentRun {
+  const run: StoredAgentRun = {
+    id: String(row.id),
+    incidentId: String(row.incident_id),
+    source: row.source === 'rehearsal' ? 'rehearsal' : 'ai',
+    status: ['queued', 'running', 'completed', 'failed'].includes(String(row.status)) ? row.status as StoredAgentRun['status'] : 'failed',
+    startedAt: String(row.started_at),
+    eventCount: Number(row.event_count),
+  };
+  if (row.finished_at) run.finishedAt = String(row.finished_at);
+  if (row.outcome) run.outcome = String(row.outcome);
+  return run;
+}
+
+function agentEventFromRow(row: Record<string, unknown>): StoredAgentEvent {
+  return { seq: Number(row.seq), at: String(row.at), phase: String(row.phase), kind: String(row.kind), message: String(row.message) };
+}
+
 function memoryState(): MemoryState {
-  return { incidents: new Map(), probeStreaks: new Map(), rollbackAttempts: new Set(), settings: new Map() };
+  return { incidents: new Map(), probeStreaks: new Map(), rollbackAttempts: new Set(), settings: new Map(), agentRuns: new Map() };
 }
 
 export class IncidentStore {
@@ -67,6 +105,94 @@ export class IncidentStore {
         value TEXT NOT NULL
       )
     `;
+    await this.sql!`
+      CREATE TABLE IF NOT EXISTS agent_runs (
+        id TEXT PRIMARY KEY,
+        incident_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        outcome TEXT,
+        event_count INTEGER NOT NULL
+      )
+    `;
+    await this.sql!`CREATE INDEX IF NOT EXISTS agent_runs_started_at_idx ON agent_runs (started_at DESC)`;
+    await this.sql!`
+      CREATE TABLE IF NOT EXISTS agent_events (
+        run_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        at TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        message TEXT NOT NULL,
+        PRIMARY KEY (run_id, seq)
+      )
+    `;
+  }
+
+  saveAgentRun(run: StoredAgentRun): StoreValue<void> {
+    if (this.memory) {
+      const current = this.memory.agentRuns.get(run.id);
+      this.memory.agentRuns.set(run.id, { ...run, events: current?.events ?? [] });
+      return;
+    }
+    return this.sql!`
+      INSERT INTO agent_runs (id, incident_id, source, status, started_at, finished_at, outcome, event_count)
+      VALUES (${run.id}, ${run.incidentId}, ${run.source}, ${run.status}, ${run.startedAt}, ${run.finishedAt ?? null}, ${run.outcome ?? null}, ${run.eventCount})
+      ON CONFLICT(id) DO UPDATE SET
+        status = EXCLUDED.status,
+        finished_at = EXCLUDED.finished_at,
+        outcome = EXCLUDED.outcome,
+        event_count = EXCLUDED.event_count
+    `.then(() => undefined);
+  }
+
+  saveAgentEvent(runId: string, event: StoredAgentEvent): StoreValue<void> {
+    if (this.memory) {
+      const run = this.memory.agentRuns.get(runId);
+      if (!run) return;
+      run.events = [...run.events.filter(item => item.seq !== event.seq), event].sort((a, b) => a.seq - b.seq).slice(-500);
+      run.eventCount = run.events.length;
+      return;
+    }
+    return this.sql!`
+      INSERT INTO agent_events (run_id, seq, at, phase, kind, message)
+      VALUES (${runId}, ${event.seq}, ${event.at}, ${event.phase}, ${event.kind}, ${event.message})
+      ON CONFLICT(run_id, seq) DO UPDATE SET at = EXCLUDED.at, phase = EXCLUDED.phase, kind = EXCLUDED.kind, message = EXCLUDED.message
+    `.then(async () => {
+      if (event.seq > 500) await this.sql!`DELETE FROM agent_events WHERE run_id = ${runId} AND seq <= ${event.seq - 500}`;
+    });
+  }
+
+  listAgentRuns(limit = 50): StoreValue<StoredAgentRun[]> {
+    const bounded = Math.max(1, Math.min(Math.trunc(limit), 50));
+    if (this.memory) return [...this.memory.agentRuns.values()]
+      .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))
+      .slice(0, bounded)
+      .map(({ events: _events, ...run }) => run);
+    return this.sql!`
+      SELECT id, incident_id, source, status, started_at, finished_at, outcome, event_count
+      FROM agent_runs ORDER BY started_at DESC LIMIT ${bounded}
+    `.then(rows => rows.map(agentRunFromRow));
+  }
+
+  getAgentRun(id: string): StoreValue<(StoredAgentRun & { events: StoredAgentEvent[] }) | undefined> {
+    if (this.memory) {
+      const run = this.memory.agentRuns.get(id);
+      return run ? { ...run, events: run.events.map(event => ({ ...event })) } : undefined;
+    }
+    return this.sql!`
+      SELECT id, incident_id, source, status, started_at, finished_at, outcome, event_count
+      FROM agent_runs WHERE id = ${id}
+    `.then(async rows => {
+      const row = rows[0];
+      if (!row) return undefined;
+      const events = await this.sql!`
+        SELECT seq, at, phase, kind, message FROM agent_events WHERE run_id = ${id} ORDER BY seq ASC
+      `;
+      return { ...agentRunFromRow(row), events: events.map(agentEventFromRow) };
+    });
   }
 
   save(incident: Incident): StoreValue<void> {
@@ -76,7 +202,7 @@ export class IncidentStore {
     }
     return this.sql!`
       INSERT INTO incidents (id, detected_at, incident_json)
-      VALUES (${incident.id}, ${incident.detectedAt}, ${this.sql!.json(incident)})
+      VALUES (${incident.id}, ${incident.detectedAt}, ${this.sql!.json(incident as unknown as Record<string, never>)})
       ON CONFLICT(id) DO UPDATE SET detected_at = EXCLUDED.detected_at, incident_json = EXCLUDED.incident_json
     `.then(() => undefined);
   }

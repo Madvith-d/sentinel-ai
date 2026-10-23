@@ -130,12 +130,26 @@ if (remediationFlag === 'true') {
     },
   };
 }
-const hub = new ActivityHub();
+const hub = new ActivityHub({
+  saveRun: run => { void Promise.resolve(store.saveAgentRun(run)).catch(() => undefined); },
+  saveEvent: (runId, event) => { void Promise.resolve(store.saveAgentEvent(runId, event)).catch(() => undefined); },
+});
 const actions = createControllerActions({ slackWebhookUrl: process.env.SLACK_WEBHOOK_URL, remediation, settings: store }, hub);
 const incidentApi = createIncidentApi(store);
 const settingsApi = createSettingsApi(store);
 const activityApi = createActivityApi({
   hub,
+  loadRuns: () => Promise.resolve(store.listAgentRuns()),
+  loadRun: id => Promise.resolve(store.getAgentRun(id)).then(run => run && {
+    ...run,
+    events: run.events.flatMap(event => {
+      const phase = event.phase;
+      const kind = event.kind;
+      if (!['sandbox', 'checkout', 'setup', 'reproduction', 'agent', 'verification', 'patch'].includes(phase)) return [];
+      if (!['stage', 'tool', 'message', 'usage', 'status'].includes(kind)) return [];
+      return [{ seq: event.seq, at: event.at, phase: phase as 'agent', kind: kind as 'status', message: event.message }];
+    }),
+  }),
   lookupIncident: id => store.get(id),
   dispatch: (runId, incident, source) => dispatchRun(hub, runId, incident, source, remediation),
   token: process.env.NEXATHON_RUN_TOKEN,
@@ -148,6 +162,7 @@ const watch = {
   probePath: monitorConfig?.probePath ?? '/api/tasks',
   rollbackEnabled: Boolean(monitorConfig?.rollbackEnabled),
   intervalMs: monitorConfig?.pollIntervalMs ?? 30_000,
+  failures: 0,
 };
 
 let vercelDevice: { code: string; expiresAt: number } | undefined;
@@ -179,12 +194,15 @@ function launchMonitor(config: MonitorConfig): void {
     onResult: (_, result) => {
       watch.checkedAt = new Date().toISOString();
       if (result.action === 'monitor') {
+        watch.failures = result.consecutiveFailures;
         watch.outcome = result.consecutiveFailures > 0 ? 'failing' : 'healthy';
         watch.detail = result.reason;
       } else if (result.action === 'incident') {
+        watch.failures = 3;
         watch.outcome = 'incident';
         watch.detail = `${result.incident.status}: ${result.incident.evidence[0] ?? 'Incident recorded.'}`;
       } else {
+        watch.failures = 0;
         watch.outcome = 'unavailable';
         watch.detail = result.reason;
         console.error(`Controller monitor unavailable: ${result.reason}`);

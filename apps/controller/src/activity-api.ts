@@ -1,12 +1,15 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { Incident } from '@nexathon/contracts';
-import type { ActivityEvent, ActivityHub, ActivitySource } from './activity';
+import type { ActivityEvent, ActivityHub, ActivityRunDetail, ActivityRunSummary, ActivitySource } from './activity';
 
 const MAX_BODY_BYTES = 1024;
 const HEARTBEAT_MS = 15_000;
 
 export interface ActivityApiOptions {
   hub: ActivityHub;
+  /** Stored runs survive a controller restart. Memory still wins for a live run. */
+  loadRuns?: () => Promise<ActivityRunSummary[]>;
+  loadRun?: (id: string) => Promise<ActivityRunDetail | undefined>;
   lookupIncident: (id: string) => Incident | undefined | Promise<Incident | undefined>;
   dispatch: (runId: string, incident: Incident, source: ActivitySource) => void;
   token?: string;
@@ -25,6 +28,19 @@ function authorized(request: Request, token?: string): boolean {
   const received = Buffer.from(request.headers.get('authorization')?.replace(/^Bearer /, '') ?? '');
   const expected = Buffer.from(token);
   return received.length === expected.length && timingSafeEqual(received, expected);
+}
+
+async function rememberedRun(
+  hub: ActivityHub,
+  loadRun: ActivityApiOptions['loadRun'],
+  id: string,
+): Promise<ActivityRunDetail | undefined> {
+  const live = hub.get(id);
+  if (live) return live;
+  const stored = await loadRun?.(id);
+  if (!stored) return undefined;
+  hub.restore(stored);
+  return hub.get(id);
 }
 
 function eventFrame(event: ActivityEvent): Uint8Array {
@@ -89,12 +105,16 @@ export function createActivityApi(options: ActivityApiOptions) {
     const url = new URL(request.url);
 
     if (request.method === 'GET' && url.pathname === '/api/agent/runs') {
-      return Response.json(hub.list(), { headers: { 'Cache-Control': 'no-store' } });
+      const stored = options.loadRuns ? await options.loadRuns() : [];
+      const byId = new Map(stored.map(run => [run.id, run]));
+      for (const run of hub.list()) byId.set(run.id, run);
+      const runs = [...byId.values()].sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt)).slice(0, 50);
+      return Response.json(runs, { headers: { 'Cache-Control': 'no-store' } });
     }
 
     const detail = /^\/api\/agent\/runs\/([a-z0-9-]{1,64})$/.exec(url.pathname);
     if (request.method === 'GET' && detail) {
-      const run = hub.get(detail[1]);
+      const run = await rememberedRun(hub, options.loadRun, detail[1]);
       return run
         ? Response.json(run, { headers: { 'Cache-Control': 'no-store' } })
         : Response.json({ error: 'Run not found.' }, { status: 404 });
@@ -102,7 +122,7 @@ export function createActivityApi(options: ActivityApiOptions) {
 
     const events = /^\/api\/agent\/runs\/([a-z0-9-]{1,64})\/events$/.exec(url.pathname);
     if (request.method === 'GET' && events) {
-      if (!hub.has(events[1])) return Response.json({ error: 'Run not found.' }, { status: 404 });
+      if (!await rememberedRun(hub, options.loadRun, events[1])) return Response.json({ error: 'Run not found.' }, { status: 404 });
       const after = Number(request.headers.get('last-event-id') ?? url.searchParams.get('after') ?? 0);
       const afterSeq = Number.isSafeInteger(after) && after > 0 ? after : 0;
       return stream(hub, events[1], afterSeq, server, request);

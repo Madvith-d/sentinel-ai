@@ -52,12 +52,38 @@ function summary(run: StoredRun): ActivityRunSummary {
   };
 }
 
+export interface ActivityPersistence {
+  saveRun(run: ActivityRunSummary): void;
+  saveEvent(runId: string, event: ActivityEvent): void;
+}
+
 /**
- * In-memory feed of remediation progress. Events are safe summaries produced by the
- * remediator; this hub only bounds them and fans them out. Nothing is persisted.
+ * Live feed of remediation progress. Events are safe summaries produced by the
+ * remediator. When a persistence sink is provided, each run and event is written
+ * there so a later process can show the log after the sandbox is gone.
  */
 export class ActivityHub {
   private readonly runs = new Map<string, StoredRun>();
+
+  constructor(private readonly persist?: ActivityPersistence) {}
+
+  /** Loads a previously stored run without writing it again. */
+  restore(detail: ActivityRunDetail): void {
+    if (this.runs.has(detail.id)) return;
+    const events = detail.events.slice(-MAX_EVENTS);
+    this.runs.set(detail.id, {
+      id: detail.id,
+      incidentId: detail.incidentId,
+      source: detail.source,
+      status: detail.status,
+      startedAt: detail.startedAt,
+      ...(detail.finishedAt ? { finishedAt: detail.finishedAt } : {}),
+      ...(detail.outcome ? { outcome: detail.outcome } : {}),
+      events,
+      subscribers: new Set(),
+      nextSeq: events.reduce((max, event) => Math.max(max, event.seq), 0) + 1,
+    });
+  }
 
   create(input: { incidentId: string; source: ActivitySource }): ActivityRunSummary {
     const run: StoredRun = {
@@ -71,6 +97,7 @@ export class ActivityHub {
       nextSeq: 1,
     };
     this.runs.set(run.id, run);
+    this.persist?.saveRun(summary(run));
     for (const [id, candidate] of this.runs) {
       if (this.runs.size <= MAX_RUNS) break;
       if (candidate.subscribers.size === 0) this.runs.delete(id);
@@ -80,7 +107,10 @@ export class ActivityHub {
 
   markRunning(id: string): void {
     const run = this.runs.get(id);
-    if (run && run.status === 'queued') run.status = 'running';
+    if (run && run.status === 'queued') {
+      run.status = 'running';
+      this.persist?.saveRun(summary(run));
+    }
   }
 
   append(id: string, activity: RemediationActivity): void {
@@ -95,6 +125,8 @@ export class ActivityHub {
     };
     run.events.push(event);
     if (run.events.length > MAX_EVENTS) run.events.shift();
+    this.persist?.saveEvent(run.id, event);
+    this.persist?.saveRun(summary(run));
     for (const subscriber of run.subscribers) {
       try {
         subscriber(event);
@@ -110,6 +142,7 @@ export class ActivityHub {
     run.status = status;
     run.finishedAt = new Date().toISOString();
     run.outcome = outcome.slice(0, 300);
+    this.persist?.saveRun(summary(run));
     this.append(id, { at: run.finishedAt, phase: 'patch', kind: 'status', message: run.outcome });
     for (const subscriber of run.subscribers) run.subscribers.delete(subscriber);
   }

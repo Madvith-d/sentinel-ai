@@ -118,7 +118,25 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .button-secondary { background: transparent; color: #c5c5c5; }
 .button-ghost { background: transparent; color: var(--muted); }
 
-.workspace { display: grid; min-height: calc(100vh - 58px); flex: 1; grid-template-columns: 280px minmax(0, 1fr); }
+.streak {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--line);
+  background: #101010;
+}
+.streak strong { display: block; margin: 2px 0; font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.streak span { color: var(--muted); font-size: 12px; }
+.streak ol { display: flex; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.streak li { min-width: 92px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #141414; }
+.streak li span, .streak li em { display: block; font-style: normal; }
+.streak li span { color: #d7d7d7; font-size: 12px; }
+.streak li em { margin-top: 2px; color: var(--faint); font-size: 11px; }
+.streak li.hit { border-color: #6a4545; background: var(--danger-bg); }
+.streak li.hit em { color: var(--danger); }
+.workspace { display: grid; min-height: calc(100vh - 130px); flex: 1; grid-template-columns: 280px minmax(0, 1fr); }
 .sidebar {
   overflow-y: auto;
   padding: 24px 14px;
@@ -331,6 +349,8 @@ h1, h2, strong { font-family: 'IBM Plex Sans', sans-serif; }
 .connection-off { color: var(--muted) !important; }
 
 @media (max-width: 900px) {
+  .streak { display: block; }
+  .streak ol { margin-top: 10px; }
   .workspace { display: block; min-height: 0; }
   .sidebar { max-height: 42vh; padding: 18px; border-right: 0; border-bottom: 1px solid var(--line); }
   .incident-list { display: flex; overflow-x: auto; padding-bottom: 4px; }

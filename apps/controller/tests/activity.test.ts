@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { Incident } from '@nexathon/contracts';
 import { ActivityHub } from '../src/activity';
 import { createActivityApi } from '../src/activity-api';
+import { IncidentStore } from '../src/incident-store';
 
 const incident: Incident = {
   id: 'incident-1',
@@ -51,6 +52,26 @@ describe('activity hub', () => {
     const received: string[] = [];
     hub.subscribe(run.id, 1, event => received.push(event.message));
     expect(received).toEqual(['step 1', 'step 2']);
+  });
+
+  it('writes the run and reads it back after the memory hub is gone', async () => {
+    const store = new IncidentStore(':memory:');
+    const hub = new ActivityHub({
+      saveRun: run => { void store.saveAgentRun(run); },
+      saveEvent: (runId, event) => { void store.saveAgentEvent(runId, event); },
+    });
+    const run = hub.create({ incidentId: incident.id, source: 'ai' });
+    hub.append(run.id, { at: '2026-10-23T12:00:02.000Z', phase: 'agent', kind: 'message', message: 'Reading the failing route.' });
+    hub.finish(run.id, 'completed', 'Open pull request published.');
+    const saved = await store.getAgentRun(run.id);
+    expect(saved?.status).toBe('completed');
+    expect(saved?.events.map(event => event.message)).toContain('Reading the failing route.');
+    const restarted = new ActivityHub();
+    const listed = await store.listAgentRuns();
+    expect(listed.map(item => item.id)).toContain(run.id);
+    const loaded = await store.getAgentRun(run.id);
+    restarted.restore({ ...loaded!, events: loaded!.events.map(event => ({ ...event, phase: 'agent', kind: 'message' })) });
+    expect(restarted.get(run.id)?.events.length).toBeGreaterThan(0);
   });
 
   it('keeps only the newest runs and marks an active run', () => {

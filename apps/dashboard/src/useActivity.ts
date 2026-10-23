@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, readJson } from './api';
-import { parseActivityEvent, parseActivityRuns, type ActivityEvent, type ActivityRun } from './activity';
+import { parseActivityDetail, parseActivityEvent, parseActivityRuns, type ActivityEvent, type ActivityRun } from './activity';
 import type { DataMode } from './useIncidents';
 
 const POLL_MS = 1500;
@@ -28,7 +28,12 @@ export function useActivity(mode: DataMode, incidentId: string | null): Activity
       try {
         const runs = parseActivityRuns(await readJson('/api/agent/runs', abort.signal));
         if (abort.signal.aborted) return;
-        setRun(runs.find(candidate => candidate.incidentId === incidentId) ?? null);
+        const match = runs.find(candidate => candidate.incidentId === incidentId) ?? null;
+        setRun(match);
+        if (match) {
+          const detail = parseActivityDetail(await readJson(`/api/agent/runs/${match.id}`, abort.signal));
+          if (!abort.signal.aborted) setEvents(detail.events);
+        } else setEvents([]);
         setError(null);
       } catch (failure) {
         if (abort.signal.aborted) return;
@@ -44,8 +49,7 @@ export function useActivity(mode: DataMode, incidentId: string | null): Activity
   const runId = run?.id;
 
   useEffect(() => {
-    setEvents([]);
-    if (mode !== 'live' || !runId) return;
+    if (mode !== 'live' || !runId || status.current === 'completed' || status.current === 'failed') return;
     let closed = false;
     const source = new EventSource(`/api/agent/runs/${runId}/events`);
     source.addEventListener('activity', (message) => {

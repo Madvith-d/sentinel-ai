@@ -68,6 +68,13 @@ export function parseActivityRun(value: unknown): ActivityRun {
   return run;
 }
 
+export function parseActivityDetail(value: unknown): { run: ActivityRun; events: ActivityEvent[] } {
+  const run = parseActivityRun(value);
+  const item = record(value);
+  if (!Array.isArray(item.events) || item.events.length > 500) throw new Error('Invalid activity events.');
+  return { run, events: item.events.flatMap(event => { const parsed = parseActivityEvent(event); return parsed ? [parsed] : []; }) };
+}
+
 export function parseActivityRuns(value: unknown): ActivityRun[] {
   if (!Array.isArray(value) || value.length > 50) throw new Error('Expected at most 50 activity runs.');
   return value.map(parseActivityRun);
