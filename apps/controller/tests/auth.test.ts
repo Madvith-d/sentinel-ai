@@ -17,6 +17,14 @@ describe('dashboard authentication', () => {
     const authorized = new Request('http://localhost/api/auth/session', { headers: { cookie: cookie!.split(';')[0] } });
     expect((await auth.handle(authorized))?.status).toBe(200);
     expect(auth.isAuthorized(new Request('http://localhost/api/incidents', { headers: { cookie: cookie!.split(';')[0] } }))).toBe(true);
+    expect(cookie).toContain('SameSite=Lax');
+    const restarted = new DashboardAuth('judge', 'correct horse', 'dashboard-auth-secret');
+    const stable = new DashboardAuth('judge', 'correct horse', 'dashboard-auth-secret');
+    const stableLogin = await stable.handle(new Request('http://localhost/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'judge', password: 'correct horse' }),
+    }));
+    const stableCookie = stableLogin?.headers.get('set-cookie')!.split(';')[0];
+    expect(restarted.isAuthorized(new Request('http://localhost/api/incidents', { headers: { cookie: stableCookie } }))).toBe(true);
   });
 
   it('does not reveal whether the username or password was wrong', async () => {

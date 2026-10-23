@@ -1,7 +1,8 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 
 const COOKIE = 'sentinel_session';
 const MAX_BODY_BYTES = 2_000;
+const SESSION_SECONDS = 60 * 60 * 24 * 7;
 
 function sameSecret(received: string, expected: string): boolean {
   const a = Buffer.from(received);
@@ -14,11 +15,20 @@ function cookieValue(request: Request): string | undefined {
   return cookie?.slice(COOKIE.length + 1);
 }
 
-export class DashboardAuth {
-  private readonly sessions = new Set<string>();
+function sign(secret: string, username: string, exp: number): string {
+  return createHmac('sha256', secret).update(`${username}.${exp}`).digest('base64url');
+}
 
-  constructor(private readonly username: string, private readonly password: string) {
+function sessionCookie(token: string, maxAge: number): string {
+  return `${COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
+}
+
+export class DashboardAuth {
+  private readonly signingKey: string;
+
+  constructor(private readonly username: string, private readonly password: string, authSecret = process.env.DASHBOARD_AUTH_SECRET?.trim() ?? '') {
     if (!username || !password) throw new Error('DASHBOARD_USERNAME and DASHBOARD_PASSWORD are required.');
+    this.signingKey = authSecret.length >= 8 ? authSecret : `${username}:${password}`;
   }
 
   isPublic(pathname: string): boolean {
@@ -28,7 +38,11 @@ export class DashboardAuth {
 
   isAuthorized(request: Request): boolean {
     const token = cookieValue(request);
-    return Boolean(token && this.sessions.has(token));
+    if (!token) return false;
+    const [expText, signature] = token.split('.');
+    const exp = Number(expText);
+    if (!expText || !signature || !Number.isFinite(exp) || exp * 1000 <= Date.now()) return false;
+    return sameSecret(signature, sign(this.signingKey, this.username, exp));
   }
 
   async handle(request: Request): Promise<Response | undefined> {
@@ -39,9 +53,7 @@ export class DashboardAuth {
       return Response.json({ authenticated }, { status: authenticated ? 200 : 401 });
     }
     if (url.pathname === '/api/auth/logout' && request.method === 'POST') {
-      const token = cookieValue(request);
-      if (token) this.sessions.delete(token);
-      return new Response(null, { status: 204, headers: { 'Set-Cookie': `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` } });
+      return new Response(null, { status: 204, headers: { 'Set-Cookie': sessionCookie('', 0) } });
     }
     if (url.pathname !== '/api/auth/login' || request.method !== 'POST') return new Response('Not found.', { status: 404 });
     if (Number(request.headers.get('content-length') ?? 0) > MAX_BODY_BYTES) return Response.json({ error: 'Request too large.' }, { status: 413 });
@@ -54,9 +66,9 @@ export class DashboardAuth {
       || !sameSecret(receivedUser, this.username) || !sameSecret(receivedPassword, this.password)) {
       return Response.json({ error: 'Invalid username or password.' }, { status: 401 });
     }
-    const token = randomBytes(32).toString('base64url');
-    this.sessions.add(token);
-    return Response.json({ authenticated: true }, { headers: { 'Set-Cookie': `${COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800` } });
+    const exp = Math.floor(Date.now() / 1000) + SESSION_SECONDS;
+    const token = `${exp}.${sign(this.signingKey, this.username, exp)}`;
+    return Response.json({ authenticated: true }, { headers: { 'Set-Cookie': sessionCookie(token, SESSION_SECONDS) } });
   }
 
   unauthorized(): Response {
