@@ -7,8 +7,21 @@ import {
   type Incident,
 } from '@nexathon/notifier/format';
 import { useIncidents, type DataMode } from './useIncidents';
+import { useActivity } from './useActivity';
 
 const mode: DataMode = import.meta.env.VITE_DATA_MODE === 'fixtures' ? 'fixtures' : 'live';
+
+const phaseLabels: Record<string, string> = {
+  sandbox: 'Sandbox', checkout: 'Checkout', setup: 'Setup', reproduction: 'Reproduction',
+  agent: 'Agent', verification: 'Verification', patch: 'Patch',
+};
+const runStatusLabels: Record<string, string> = {
+  queued: 'Queued', running: 'Running', completed: 'Completed', failed: 'Stopped',
+};
+
+function formatTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, { timeStyle: 'medium' }).format(new Date(value));
+}
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
@@ -52,6 +65,39 @@ function Timeline({ events }: { events: Incident['events'] }) {
   </section>;
 }
 
+function LiveActivity({ incidentId }: { incidentId: string }) {
+  const { run, events, error } = useActivity(mode, incidentId);
+  const live = run?.status === 'queued' || run?.status === 'running';
+  return <section className="panel activity-panel" aria-live="polite">
+    <div className="section-heading">
+      <h2>Live agent activity</h2>
+      {run
+        ? <span className={`run-badge ${live ? 'live' : run.status}`}>
+            {live && <span className="pulse" aria-hidden="true" />}
+            {run.source === 'ai' ? 'AI run' : 'Rehearsal'} · {runStatusLabels[run.status]}
+          </span>
+        : <span>no run yet</span>}
+    </div>
+    {error && <p className="activity-error" role="status">{error}</p>}
+    {!run && <p className="activity-empty">
+      {mode === 'fixtures'
+        ? 'Fixture data only. Run the local controller to watch an agent work.'
+        : 'No agent run for this incident yet. Start one with `bun run --cwd apps/controller start:run -- --incident=' + incidentId + '`.'}
+    </p>}
+    {run && <>
+      <ol className="activity-feed">
+        {events.map(event => <li key={event.seq} className={`activity-item phase-${event.phase}`}>
+          <span className="activity-phase">{phaseLabels[event.phase] ?? event.phase}</span>
+          <p>{event.message}</p>
+          <time dateTime={event.at}>{formatTime(event.at)}</time>
+        </li>)}
+      </ol>
+      {events.length === 0 && !error && <p className="activity-empty">Waiting for the first safe progress event…</p>}
+      {run.outcome && <p className="activity-outcome">{run.outcome}</p>}
+    </>}
+  </section>;
+}
+
 function Detail({ incident }: { incident: Incident }) {
   const actionLabel = incident.decision === 'fix_pr' ? 'Open draft PR' : incident.decision === 'rollback' ? 'View rollback target' : 'View action';
   return <main className="detail">
@@ -70,6 +116,7 @@ function Detail({ incident }: { incident: Incident }) {
     </section>
     {incident.decision === 'rollback' && <p className="caveat">{rollbackCaveat}</p>}
     <div className="detail-columns"><Evidence incident={incident} /><Timeline events={incident.events} /></div>
+    <LiveActivity incidentId={incident.id} />
   </main>;
 }
 

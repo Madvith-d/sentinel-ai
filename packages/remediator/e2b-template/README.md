@@ -19,7 +19,7 @@ E2B_REMEDIATOR_TEMPLATE=nexathon-remediator \
   bun run --cwd packages/remediator smoke:fixture
 ```
 
-The build creates/rebuilds the account template alias `nexathon-remediator` with **2 vCPUs and 4096 MiB RAM**. E2B template builds and live smoke sandboxes incur E2B usage. To start a new sandbox, the controller sets `E2B_REMEDIATOR_TEMPLATE=nexathon-remediator`. This alias was built and verified in the current E2B account on October 23, 2026; another account must run the build command before use. Committing the file alone does not create a hosted template.
+The build creates/rebuilds the account template alias `nexathon-remediator` with **8 vCPUs and 8192 MiB RAM**. E2B template builds and live smoke sandboxes incur E2B usage. The alias must be rebuilt in the E2B account for the new size to take effect: the Dockerfile and this script are the source of truth, but the hosted template is separate state. To start a new sandbox, the controller sets `E2B_REMEDIATOR_TEMPLATE=nexathon-remediator`. Another account must run the build command before use.
 
 Do not commit a generated `e2b.toml` containing an account-specific template ID. After changing the version pins or Dockerfile, rebuild the template and repeat both smoke commands before changing the alias used by the controller.
 
