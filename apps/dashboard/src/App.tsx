@@ -191,7 +191,7 @@ function Dashboard() {
   const counts = useMemo(() => ({ active: snapshot.incidents.filter(item => !['recovered', 'needs_human', 'pr_opened'].includes(item.status)).length, recovered: snapshot.incidents.filter(item => item.status === 'recovered').length }), [snapshot.incidents]);
 
   return <div className="app-shell">
-    <header className="topbar"><div className="brand"><span className="brand-mark" aria-hidden="true">K</span><span>Keel <em>deploy watch</em></span></div><div className="topbar-meta"><LiveWatch /><span className={`mode-dot ${mode}`} />{mode === 'fixtures' ? 'Rehearsal data' : 'Live controller'}<button className="refresh" onClick={() => setShowSetup(value => !value)} type="button">Setup</button><button className="refresh" onClick={() => setRefresh(value => value + 1)} type="button">Refresh</button></div></header>
+    <header className="topbar"><div className="brand"><img className="brand-logo" src="/logo.png" alt="Sentinel logo" /><span>Sentinel <em>deploy watch</em></span></div><div className="topbar-meta"><LiveWatch /><span className={`mode-dot ${mode}`} />{mode === 'fixtures' ? 'Rehearsal data' : 'Live controller'}<button className="refresh" onClick={() => setShowSetup(value => !value)} type="button">Setup</button><button className="refresh" onClick={() => setRefresh(value => value + 1)} type="button">Refresh</button></div></header>
     <div className="workspace">
       <aside className="sidebar"><div className="sidebar-heading"><div><p className="eyebrow">Operations</p><h2>Incidents</h2></div><span className="count">{snapshot.incidents.length}</span></div><div className="sidebar-stats"><span><strong>{counts.active}</strong> active</span><span><strong>{counts.recovered}</strong> recovered</span></div>
         {snapshot.loading && <p className="state-message">Loading incident evidence…</p>}
@@ -226,7 +226,7 @@ function Login({ onAuthenticated }: { onAuthenticated: () => void }) {
   }
 
   return <main className="login-shell"><form className="login-card" onSubmit={submit}>
-    <span className="brand-mark" aria-hidden="true">K</span><p className="eyebrow">Keel deploy watch</p><h1>Sign in to the incident desk</h1>
+    <img className="login-logo" src="/logo.png" alt="Sentinel logo" /><p className="eyebrow">Sentinel deploy watch</p><h1>Sign in to the incident desk</h1>
     <p className="login-note">Use the local dashboard credentials configured in the controller environment.</p>
     <label>Username<input autoComplete="username" value={username} onChange={event => setUsername(event.target.value)} required /></label>
     <label>Password<input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required /></label>

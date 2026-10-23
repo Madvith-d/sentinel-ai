@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 
-const COOKIE = 'keel_session';
+const COOKIE = 'sentinel_session';
 const MAX_BODY_BYTES = 2_000;
 
 function sameSecret(received: string, expected: string): boolean {

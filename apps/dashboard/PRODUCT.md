@@ -8,11 +8,11 @@ web
 
 ## Users
 
-Primary users are local demo operators and developers investigating a broken deployment. They need to confirm what failed, understand the evidence, and see whether Keel rolled back safely or opened a draft pull request.
+Primary users are local demo operators and developers investigating a broken deployment. They need to confirm what failed, understand the evidence, and see whether Sentinel rolled back safely or opened a draft pull request.
 
 ## Product Purpose
 
-Keel puts deployment probes, deployment revisions, incident decisions, recovery status, and safe agent activity in one local control room. Success means an operator can orient within seconds and configure the monitored Vercel project without editing source files.
+Sentinel puts deployment probes, deployment revisions, incident decisions, recovery status, and safe agent activity in one local control room. Success means an operator can orient within seconds and configure the monitored Vercel project without editing source files.
 
 ## Positioning
 

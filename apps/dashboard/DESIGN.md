@@ -1,4 +1,4 @@
-# Keel Dashboard Design
+# Sentinel Dashboard Design
 
 The dashboard is an Operate surface: a local incident control room for developers. Its visual world is a dark, instrument-like workspace with restrained color reserved for state.
 

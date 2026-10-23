@@ -12,7 +12,7 @@ describe('dashboard authentication', () => {
     }));
     expect(login?.status).toBe(200);
     const cookie = login?.headers.get('set-cookie');
-    expect(cookie).toContain('keel_session=');
+    expect(cookie).toContain('sentinel_session=');
 
     const authorized = new Request('http://localhost/api/auth/session', { headers: { cookie: cookie!.split(';')[0] } });
     expect((await auth.handle(authorized))?.status).toBe(200);

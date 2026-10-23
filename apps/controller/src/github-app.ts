@@ -6,7 +6,7 @@ const state = randomBytes(16).toString('hex');
 export function githubConnectPage(origin: string, owner?: string): string {
   const redirect = `${origin}/api/github/callback`;
   const manifest = {
-    name: 'Keel',
+    name: 'Sentinel',
     url: origin,
     redirect_url: redirect,
     callback_urls: [redirect],
@@ -21,7 +21,7 @@ export function githubConnectPage(origin: string, owner?: string): string {
     : 'https://github.com/settings/apps/new';
   const json = JSON.stringify(manifest).replaceAll('<', '\\u003c');
   return `<!doctype html><meta charset="utf-8"><title>Connect GitHub</title>
-<p>GitHub will ask you to create the Keel app, then install it on the repository.</p>
+<p>GitHub will ask you to create the Sentinel app, then install it on the repository.</p>
 <form method="post" action="${target}"><input type="hidden" name="state" value="${state}">
 <input type="hidden" name="manifest" value='${json.replaceAll("'", '&#39;')}'>
 <button type="submit">Continue to GitHub</button></form><script>document.forms[0].submit()</script>`;
@@ -34,7 +34,7 @@ export function githubStateOk(value: string | null): boolean {
 export async function exchangeGithubManifest(code: string): Promise<Record<string, string>> {
   const response = await fetch(`https://api.github.com/app-manifests/${encodeURIComponent(code)}/conversions`, {
     method: 'POST',
-    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'keel' },
+    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'sentinel' },
   });
   if (!response.ok) throw new Error('GitHub did not finish creating the app.');
   const body = await response.json() as { id?: number; pem?: string; slug?: string; client_id?: string };
@@ -66,7 +66,7 @@ export async function installationToken(appId: string, pem: string, installation
     headers: {
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${appJwt(appId, pem)}`,
-      'User-Agent': 'keel',
+      'User-Agent': 'sentinel',
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ permissions }),

@@ -106,12 +106,12 @@ export function Setup({ onClose }: { onClose: () => void }) {
       <div>
         <p className="eyebrow">Control room / configuration</p>
         <h1>Connect your stack</h1>
-        <p className="setup-lede">Give Keel the smallest set of credentials it needs to watch one Vercel project and report evidence here.</p>
+        <p className="setup-lede">Give Sentinel the smallest set of credentials it needs to watch one Vercel project and report evidence here.</p>
       </div>
       <button className="button button-ghost" type="button" onClick={onClose}>Back to incidents</button>
     </div>
 
-    <p className="setup-note">Railway, Render, and Coolify use scoped API tokens below. Select the active platform, provide its public production URL and service/application ID, then restart Keel. Deployment logs are attached to incident evidence and rollback remains opt-in.</p>
+    <p className="setup-note">Railway, Render, and Coolify use scoped API tokens below. Select the active platform, provide its public production URL and service/application ID, then restart Sentinel. Deployment logs are attached to incident evidence and rollback remains opt-in.</p>
 
     {error && <div className="error-box" role="alert"><strong>Setup needs attention</strong><p>{error}</p></div>}
 

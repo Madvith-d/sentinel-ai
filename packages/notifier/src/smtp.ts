@@ -67,14 +67,14 @@ function openSocket(config: SmtpConfig): Promise<Socket | TLSSocket> {
 
 async function session(socket: Socket | TLSSocket, reader: Reader, config: SmtpConfig, subject: string, text: string): Promise<void> {
   await reader.expect([220]);
-  await reader.command(socket, 'EHLO keel', [250]);
+  await reader.command(socket, 'EHLO sentinel', [250]);
   let active: Socket | TLSSocket = socket;
   let activeReader = reader;
   if (!config.secure && config.startTls !== false) {
     await activeReader.command(active, 'STARTTLS', [220]);
     active = await upgrade(active, config.host);
     activeReader = createReader(active);
-    await activeReader.command(active, 'EHLO keel', [250]);
+    await activeReader.command(active, 'EHLO sentinel', [250]);
   }
   if (config.user && config.password) {
     await activeReader.command(active, 'AUTH LOGIN', [334]);

@@ -30,7 +30,7 @@ function listen(): Promise<{ port: number; received: string[]; close: () => Prom
           }
           continue;
         }
-        if (line === 'EHLO keel' || line.startsWith('MAIL FROM') || line.startsWith('RCPT TO')) socket.write('250 ok\r\n');
+        if (line === 'EHLO sentinel' || line.startsWith('MAIL FROM') || line.startsWith('RCPT TO')) socket.write('250 ok\r\n');
         else if (line === 'AUTH LOGIN' || line === 'dXNlcg==') socket.write('334 ok\r\n');
         else if (line === 'cGFzcw==') socket.write('235 ok\r\n');
         else if (line === 'DATA') { mode = 'data'; socket.write('354 ok\r\n'); }
@@ -53,12 +53,12 @@ describe('smtp notifier', () => {
     const server = await listen();
     const smtp: SmtpConfig = {
       host: '127.0.0.1', port: server.port, secure: false, startTls: false,
-      user: 'user', password: 'pass', from: 'keel@example.com', to: 'judge@example.com', timeoutMs: 3000,
+      user: 'user', password: 'pass', from: 'sentinel@example.com', to: 'judge@example.com', timeoutMs: 3000,
     };
     const result = await notifyIncident(incident, { smtp });
     await server.close();
     expect(result.ok).toBe(true);
-    expect(server.received.some(line => line.includes('Subject: Keel')) || server.received.join('\n').includes('inc-mail')).toBe(true);
+    expect(server.received.some(line => line.includes('Subject: Sentinel')) || server.received.join('\n').includes('inc-mail')).toBe(true);
     expect(server.received).toContain('AUTH LOGIN');
   });
 

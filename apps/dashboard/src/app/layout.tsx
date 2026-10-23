@@ -6,8 +6,9 @@ import '@fontsource/ibm-plex-sans/latin-600.css';
 import '../styles.css';
 
 export const metadata: Metadata = {
-  title: 'Keel · Deploy watch',
+  title: 'Sentinel · Deploy watch',
   description: 'Read-only local incident evidence and recovery timeline.',
+  icons: { icon: '/logo.png', apple: '/logo.png' },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {

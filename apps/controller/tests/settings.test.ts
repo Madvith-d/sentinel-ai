@@ -5,7 +5,7 @@ import { createSettingsApi } from '../src/settings';
 describe('integration settings', () => {
   it('stores website values and applies them over the environment on startup', async () => {
     const store = new IncidentStore(':memory:');
-    await store.writeSettings({ SMTP_HOST: 'mail.example.com', SMTP_FROM: 'keel@example.com' });
+    await store.writeSettings({ SMTP_HOST: 'mail.example.com', SMTP_FROM: 'sentinel@example.com' });
     const api = createSettingsApi(store);
     const saved = await api(new Request('http://127.0.0.1/api/settings', {
       method: 'POST',
