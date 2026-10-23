@@ -262,18 +262,21 @@ async function integrationRoutes(request: Request, settingsStore: typeof store):
     await applyStoredSettings(settingsStore);
     const token = process.env.VERCEL_ACCESS_TOKEN;
     if (!token) return Response.json({ error: 'Connect Vercel before listing projects.' }, { status: 409 });
-    const team = process.env.VERCEL_TEAM_ID ? `?teamId=${encodeURIComponent(process.env.VERCEL_TEAM_ID)}` : '';
+    const headers = { Authorization: `Bearer ${token}` };
     try {
-      const response = await fetch(`https://api.vercel.com/v9/projects${team}`, { headers: { Authorization: `Bearer ${token}` } });
+      let response = await fetch('https://api.vercel.com/v9/projects', { headers });
+      if (!response.ok && process.env.VERCEL_TEAM_ID) {
+        response = await fetch(`https://api.vercel.com/v9/projects?teamId=${encodeURIComponent(process.env.VERCEL_TEAM_ID)}`, { headers });
+      }
       if (!response.ok) return Response.json({ error: 'Vercel did not list projects.' }, { status: 502 });
-      const body = await response.json() as { projects?: { id?: string; name?: string; alias?: { domain?: string }[]; targets?: { production?: { alias?: string[] } } }[] };
+      const body = await response.json() as { projects?: { id?: string; name?: string; accountId?: string; alias?: { domain?: string }[]; targets?: { production?: { alias?: string[] } } }[] };
       const projects = (body.projects ?? []).flatMap(project => {
         if (!project.id || !project.name) return [];
         const domains = [
           ...(project.targets?.production?.alias ?? []),
           ...(project.alias ?? []).flatMap(alias => alias.domain ? [alias.domain] : []),
         ];
-        return [{ id: project.id, name: project.name, domains }];
+        return [{ id: project.id, name: project.name, domains, teamId: project.accountId?.startsWith('team_') ? project.accountId : '' }];
       });
       const selected = matchingVercelProject(projects, process.env.VERCEL_PRODUCTION_DOMAIN ?? '');
       return Response.json({ projects, selected });

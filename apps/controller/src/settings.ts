@@ -14,7 +14,7 @@ export const settingFields: SettingField[] = [
   { group: 'Platform', key: 'CONTROLLER_PLATFORM', label: 'Platform (vercel, railway, render, coolify)', secret: false },
   { group: 'Vercel', key: 'VERCEL_ACCESS_TOKEN', label: 'Access token (filled by Connect Vercel)', secret: true },
   { group: 'Vercel', key: 'VERCEL_REFRESH_TOKEN', label: 'Refresh token', secret: true },
-  { group: 'Vercel', key: 'VERCEL_TEAM_ID', label: 'Team id', secret: false, clientOwned: true },
+  { group: 'Vercel', key: 'VERCEL_TEAM_ID', label: 'Team id', secret: false, hidden: true, clientOwned: true },
   { group: 'Vercel', key: 'VERCEL_PROJECT_ID', label: 'Project id', secret: false, clientOwned: true },
   { group: 'Vercel', key: 'CONTROLLER_ROLLBACK_PROJECT_ID', label: 'Rollback project id', secret: false, hidden: true, clientOwned: true },
   { group: 'Vercel', key: 'VERCEL_PRODUCTION_DOMAIN', label: 'Public site link (host only)', secret: false, clientOwned: true },
@@ -67,7 +67,7 @@ export async function applyStoredSettings(store: Pick<IncidentStore, 'readSettin
   }
 }
 
-export function createSettingsApi(store: Pick<IncidentStore, 'readSettings' | 'writeSettings'>) {
+export function createSettingsApi(store: Pick<IncidentStore, 'readSettings' | 'writeSettings' | 'deleteSettings'>) {
   return async (request: Request): Promise<Response | null> => {
     const url = new URL(request.url);
     if (url.pathname !== '/api/settings') return null;
@@ -93,10 +93,12 @@ export function createSettingsApi(store: Pick<IncidentStore, 'readSettings' | 'w
     const incoming = body && typeof body === 'object' && 'values' in body ? (body as { values?: unknown }).values : undefined;
     if (!incoming || typeof incoming !== 'object') return Response.json({ error: 'Expected { values }.' }, { status: 400 });
     const next: Record<string, string> = {};
+    const clear: string[] = [];
     for (const [key, value] of Object.entries(incoming)) {
       if (!allowed.has(key) || typeof value !== 'string') continue;
       const trimmed = value.trim();
       if (trimmed) next[key] = trimmed;
+      else if (clientOwned.has(key)) clear.push(key);
     }
     if (next.VERCEL_PRODUCTION_DOMAIN) {
       const raw = next.VERCEL_PRODUCTION_DOMAIN;
@@ -113,7 +115,8 @@ export function createSettingsApi(store: Pick<IncidentStore, 'readSettings' | 'w
     if (next.RAILWAY_SERVICE_ID) next.CONTROLLER_ROLLBACK_PROJECT_ID = next.RAILWAY_SERVICE_ID;
     if (next.RENDER_SERVICE_ID) next.CONTROLLER_ROLLBACK_PROJECT_ID = next.RENDER_SERVICE_ID;
     if (next.COOLIFY_APPLICATION_ID) next.CONTROLLER_ROLLBACK_PROJECT_ID = next.COOLIFY_APPLICATION_ID;
-    await store.writeSettings(next);
-    return Response.json({ ok: true, saved: Object.keys(next), restartRequired: true });
+    if (Object.keys(next).length) await store.writeSettings(next);
+    if (clear.length) await store.deleteSettings(clear);
+    return Response.json({ ok: true, saved: Object.keys(next), cleared: clear, restartRequired: true });
   };
 }

@@ -12,6 +12,13 @@ interface SettingField {
 
 type VercelConnect = { userCode: string; verificationUri: string; status: string } | null;
 
+function productionHost(domains: string[]): string {
+  const hosts = domains.filter(domain => domain && !domain.includes('*'));
+  const own = hosts.find(domain => !domain.endsWith('.vercel.app'));
+  if (own) return own;
+  return hosts.filter(domain => domain.endsWith('.vercel.app')).sort((a, b) => a.length - b.length)[0] ?? '';
+}
+
 export function Setup({ onClose }: { onClose: () => void }) {
   const [fields, setFields] = useState<SettingField[]>([]);
   const [draft, setDraft] = useState<Record<string, string>>({});
@@ -20,7 +27,7 @@ export function Setup({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [vercel, setVercel] = useState<VercelConnect>(null);
   const [repos, setRepos] = useState<string[]>([]);
-  const [projects, setProjects] = useState<{ id: string; name: string; domains: string[] }[]>([]);
+  const [projects, setProjects] = useState<{ id: string; name: string; domains: string[]; teamId?: string }[]>([]);
   const [monitorNote, setMonitorNote] = useState('');
   const [githubListNote, setGithubListNote] = useState('Repository list has not loaded.');
   const [vercelListNote, setVercelListNote] = useState('Project list has not loaded.');
@@ -69,7 +76,7 @@ export function Setup({ onClose }: { onClose: () => void }) {
     const abort = new AbortController();
     void fetch('/api/vercel/projects', { headers: { Accept: 'application/json' }, signal: abort.signal })
       .then(async response => {
-        const body = await response.json().catch(() => ({})) as { projects?: { id: string; name: string; domains: string[] }[]; selected?: string | null; error?: string };
+        const body = await response.json().catch(() => ({})) as { projects?: { id: string; name: string; domains: string[]; teamId?: string }[]; selected?: string | null; error?: string };
         if (!response.ok) { setVercelListNote(body.error || `Project list failed (${response.status}).`); return; }
         const listed = body.projects ?? [];
         setProjects(listed);
@@ -123,12 +130,12 @@ export function Setup({ onClose }: { onClose: () => void }) {
     }
   }
 
-  async function choose(key: string, value: string) {
+  async function choose(key: string, value: string, extra?: Record<string, string>) {
     setValue(key, value);
     const response = await fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ values: { [key]: value } }),
+      body: JSON.stringify({ values: { [key]: value, ...extra } }),
     });
     if (!response.ok) setError('That choice was not saved.');
     else await loadSettings();
@@ -200,7 +207,7 @@ export function Setup({ onClose }: { onClose: () => void }) {
         <div>
           <h2>GitHub bot</h2>
           <p className={githubReady ? 'connection-ok' : 'connection-off'}>{githubReady ? `GitHub connected · ${botSlug}` : 'GitHub not connected'}</p>
-          <p>{githubListNote}</p>
+          {githubReady && <p>{githubListNote}</p>}
         </div>
       </div>
       <div className="setup-hero-actions">
@@ -211,7 +218,7 @@ export function Setup({ onClose }: { onClose: () => void }) {
       </div>
     </section>
 
-    <section className="setup-hero">
+    {githubReady && <section className="setup-hero">
       <div className="setup-hero-copy"><div><h2>Repository</h2><p>Choose the repo the bot can open pull requests on.</p></div></div>
       <label className="setup-field">
         <span>Repository</span>
@@ -220,7 +227,7 @@ export function Setup({ onClose }: { onClose: () => void }) {
           {repos.map(repo => <option key={repo} value={repo}>{repo}</option>)}
         </select>
       </label>
-    </section>
+    </section>}
 
     <section className="setup-hero" aria-labelledby="vercel-title">
       <div className="setup-hero-copy">
@@ -229,7 +236,7 @@ export function Setup({ onClose }: { onClose: () => void }) {
           <div className="section-kicker"><span className="status-dot status-dot-warn" /> Primary provider</div>
           <h2 id="vercel-title">Production link and Vercel</h2>
           <p className={vercelReady ? 'connection-ok' : 'connection-off'}>{vercelReady ? 'Vercel connected' : 'Vercel not connected'}</p>
-          <p>{vercelListNote} Paste the public site link and the matching project is selected.</p>
+          {vercelReady && <p>{vercelListNote} Paste the public site link and the matching project is selected.</p>}
         </div>
       </div>
       <div className="setup-hero-actions">
@@ -237,29 +244,36 @@ export function Setup({ onClose }: { onClose: () => void }) {
         {vercelReady && <button className="button button-ghost" type="button" onClick={() => void disconnect('vercel')}>Disconnect</button>}
         {vercel && <div className="connect-status"><strong>{vercel.status}</strong><span>Code <code>{vercel.userCode}</code> · <a href={vercel.verificationUri} target="_blank" rel="noreferrer">open verification</a></span></div>}
       </div>
-      <label className="setup-field">
-        <span>Vercel project</span>
-        <select value={projects.some(project => project.id === draft.VERCEL_PROJECT_ID) ? draft.VERCEL_PROJECT_ID : ''} onChange={event => void choose('VERCEL_PROJECT_ID', event.target.value)}>
-          <option value="">Choose a project</option>
-          {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
-        </select>
-      </label>
-      <div className="field-grid field-grid-2">
-        {renderField('VERCEL_ACCESS_TOKEN', 'field-wide')}
-        {renderField('VERCEL_TEAM_ID')}
-        {renderField('VERCEL_PROJECT_ID')}
-        {renderField('VERCEL_PRODUCTION_DOMAIN')}
-        {renderField('CONTROLLER_PROBE_PATH')}
-      </div>
-      <div className="setup-hero-actions">
-        <button className="button button-primary" type="button" onClick={() => void startMonitor()}>{monitorOn ? 'Monitor running' : 'Start monitor'}</button>
-        {monitorNote && <p className="success-message" role="status">{monitorNote}</p>}
-      </div>
+      {vercelReady && <>
+        <label className="setup-field">
+          <span>Vercel project</span>
+          <select value={projects.some(project => project.id === draft.VERCEL_PROJECT_ID) ? draft.VERCEL_PROJECT_ID : ''} onChange={event => {
+            const project = projects.find(item => item.id === event.target.value);
+            const host = project ? productionHost(project.domains) : '';
+            void choose('VERCEL_PROJECT_ID', event.target.value, {
+              VERCEL_TEAM_ID: project?.teamId ?? '',
+              ...(host ? { VERCEL_PRODUCTION_DOMAIN: host } : {}),
+              CONTROLLER_PROBE_PATH: draft.CONTROLLER_PROBE_PATH || '/api/tasks',
+            });
+          }}>
+            <option value="">Choose a project</option>
+            {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
+          </select>
+        </label>
+        <div className="field-grid field-grid-2">
+          {renderField('VERCEL_PRODUCTION_DOMAIN')}
+          {renderField('CONTROLLER_PROBE_PATH')}
+        </div>
+        <div className="setup-hero-actions">
+          <button className="button button-primary" type="button" onClick={() => void startMonitor()}>{monitorOn ? 'Monitor running' : 'Start monitor'}</button>
+          {monitorNote && <p className="success-message" role="status">{monitorNote}</p>}
+        </div>
+      </>}
     </section>
 
     {groups.map(group => <section className="setup-advanced" key={group}>
       <div className="setup-advanced-heading"><div><p className="eyebrow">Optional</p><h2>{group}</h2></div><span>{fields.filter(item => item.group === group && item.configured).length} configured</span></div>
-      <div className="field-grid field-grid-2">{fields.filter(item => item.group === group).map(item => renderField(item.key))}</div>
+      <div className="field-grid field-grid-2">{fields.filter(item => item.group === group && item.key !== 'REMEDIATOR_REPOSITORY').map(item => renderField(item.key))}</div>
     </section>)}
 
     <div className="setup-footer">
