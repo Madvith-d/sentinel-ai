@@ -8,6 +8,7 @@ export interface SettingField {
   key: string;
   label: string;
   secret: boolean;
+  hidden?: boolean;
 }
 
 export const settingFields: SettingField[] = [
@@ -15,7 +16,8 @@ export const settingFields: SettingField[] = [
   { group: 'Vercel', key: 'VERCEL_REFRESH_TOKEN', label: 'Refresh token', secret: true },
   { group: 'Vercel', key: 'VERCEL_TEAM_ID', label: 'Team id', secret: false },
   { group: 'Vercel', key: 'VERCEL_PROJECT_ID', label: 'Project id', secret: false },
-  { group: 'Vercel', key: 'VERCEL_PRODUCTION_DOMAIN', label: 'Public production host', secret: false },
+  { group: 'Vercel', key: 'CONTROLLER_ROLLBACK_PROJECT_ID', label: 'Rollback project id', secret: false, hidden: true },
+  { group: 'Vercel', key: 'VERCEL_PRODUCTION_DOMAIN', label: 'Public site link (host only)', secret: false },
   { group: 'Vercel', key: 'CONTROLLER_PROBE_PATH', label: 'Probe path', secret: false },
   { group: 'Vercel', key: 'CONTROLLER_MONITOR_ENABLED', label: 'Monitoring (true/false)', secret: false },
   { group: 'Vercel', key: 'CONTROLLER_ROLLBACK_ENABLED', label: 'Rollback (true/false)', secret: false },
@@ -26,6 +28,7 @@ export const settingFields: SettingField[] = [
   { group: 'GitHub', key: 'GH_TOKEN', label: 'Personal token fallback for pull requests', secret: true },
   { group: 'GitHub', key: 'GITHUB_READ_TOKEN', label: 'Personal read-token fallback', secret: true },
   { group: 'GitHub', key: 'REMEDIATOR_REPOSITORY', label: 'Repository (owner/name)', secret: false },
+  { group: 'GitHub', key: 'REMEDIATOR_ALLOWED_REPOSITORY', label: 'Allowed repository', secret: false, hidden: true },
   { group: 'Sandbox', key: 'E2B_API_KEY', label: 'E2B API key', secret: true },
   { group: 'Sandbox', key: 'E2B_REMEDIATOR_TEMPLATE', label: 'E2B template', secret: false },
   { group: 'Sandbox', key: 'CONTROLLER_REMEDIATION_ENABLED', label: 'Remediation (true/false)', secret: false },
@@ -62,7 +65,7 @@ export function createSettingsApi(store: Pick<IncidentStore, 'readSettings' | 'w
       const saved = store.readSettings();
       return Response.json({
         restartRequired: true,
-        fields: settingFields.map(field => {
+        fields: settingFields.filter(field => !field.hidden).map(field => {
           const value = saved[field.key] || process.env[field.key] || '';
           return {
             ...field,
@@ -85,6 +88,18 @@ export function createSettingsApi(store: Pick<IncidentStore, 'readSettings' | 'w
       const trimmed = value.trim();
       if (trimmed) next[key] = trimmed;
     }
+    if (next.VERCEL_PRODUCTION_DOMAIN) {
+      const raw = next.VERCEL_PRODUCTION_DOMAIN;
+      if (raw.includes('://') || raw.includes('/')) {
+        try {
+          const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
+          next.VERCEL_PRODUCTION_DOMAIN = url.hostname;
+          if (url.pathname && url.pathname !== '/') next.CONTROLLER_PROBE_PATH = url.pathname;
+        } catch { /* keep the typed value */ }
+      }
+    }
+    if (next.REMEDIATOR_REPOSITORY) next.REMEDIATOR_ALLOWED_REPOSITORY = next.REMEDIATOR_REPOSITORY;
+    if (next.VERCEL_PROJECT_ID) next.CONTROLLER_ROLLBACK_PROJECT_ID = next.VERCEL_PROJECT_ID;
     store.writeSettings(next);
     return Response.json({ ok: true, saved: Object.keys(next), restartRequired: true });
   };
