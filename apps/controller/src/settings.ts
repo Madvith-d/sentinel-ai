@@ -49,12 +49,6 @@ export const settingFields: SettingField[] = [
   { group: 'Model', key: 'REMEDIATOR_MODEL_API_KEY', label: 'Model API key', secret: true },
   { group: 'Model', key: 'REMEDIATOR_MODEL_ID', label: 'Model id', secret: false },
   { group: 'Model', key: 'REMEDIATOR_MODEL_BASE_URL', label: 'Model base URL', secret: false },
-  { group: 'Email', key: 'SMTP_HOST', label: 'SMTP host', secret: false },
-  { group: 'Email', key: 'SMTP_PORT', label: 'SMTP port', secret: false },
-  { group: 'Email', key: 'SMTP_SECURE', label: 'Implicit TLS (true/false)', secret: false },
-  { group: 'Email', key: 'SMTP_USER', label: 'SMTP user', secret: false },
-  { group: 'Email', key: 'SMTP_PASSWORD', label: 'SMTP password', secret: true },
-  { group: 'Email', key: 'SMTP_FROM', label: 'From address', secret: false },
   { group: 'Email', key: 'SMTP_TO', label: 'To address', secret: false },
 ];
 
