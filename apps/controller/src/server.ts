@@ -1,3 +1,4 @@
+import { setDefaultResultOrder } from 'node:dns';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { IncidentStore } from './incident-store';
@@ -14,6 +15,8 @@ import { applyStoredSettings, createSettingsApi } from './settings';
 import { disconnectFields, exchangeGithubManifest, githubConnectTarget, githubCredentials, githubStateOk, installationExists, listInstallationRepositories, matchingVercelProject, verifyGithubWebhook } from './github-app';
 import { pollVercelDevice, startVercelDevice } from './vercel-login';
 import { DashboardAuth } from './auth';
+
+setDefaultResultOrder('ipv4first');
 
 const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const databaseUrl = process.env.DATABASE_URL;

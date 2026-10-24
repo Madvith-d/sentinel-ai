@@ -111,12 +111,12 @@ export class VercelProvider implements DeploymentProvider {
     return url;
   }
 
-  private async request(url: URL, init: RequestInit = {}): Promise<Response> {
+  private async request(url: URL, init: RequestInit = {}, attempt = 0): Promise<Response> {
     try {
       const response = await this.fetchImpl(url, {
         ...init,
         redirect: 'error',
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: AbortSignal.timeout(Math.max(this.timeoutMs, 12_000)),
         headers: {
           Authorization: `Bearer ${this.options.accessToken}`,
           Accept: 'application/json',
@@ -128,6 +128,7 @@ export class VercelProvider implements DeploymentProvider {
       return response;
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('Vercel API request failed')) throw error;
+      if (attempt < 1) return this.request(url, init, attempt + 1);
       throw new Error('Vercel API request failed or timed out.');
     }
   }
@@ -174,8 +175,10 @@ export class VercelProvider implements DeploymentProvider {
         && item.projectId === this.options.projectId && !item.deletedAt);
     const deployment = object(alias?.deployment);
     const deploymentId = text(alias?.deploymentId) ?? text(deployment?.id);
-    if (!deploymentId) return null;
-    return this.getDeployment(deploymentId);
+    if (deploymentId) return this.getDeployment(deploymentId);
+    const latest = await this.getLatestDeploymentStatus(projectId);
+    if (!latest || latest.state === 'ERROR') return null;
+    return this.getDeployment(latest.id);
   }
 
   async getLatestDeploymentStatus(projectId: string): Promise<DeploymentStatus | null> {
