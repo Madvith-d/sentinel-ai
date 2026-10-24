@@ -242,28 +242,52 @@ export class VercelProvider implements DeploymentProvider {
   async getRuntimeLogs(projectId: string, deploymentId: string): Promise<RuntimeLog[]> {
     this.assertProject(projectId);
     if (!deploymentId.trim()) throw new Error('Vercel deployment ID is required.');
-    const url = this.apiUrl(`/v1/projects/${encodeURIComponent(this.options.projectId)}/deployments/${encodeURIComponent(deploymentId)}/runtime-logs`);
+    const now = Date.now();
+    // Stored request logs, the same query the Vercel dashboard and `vercel logs` use.
+    // The deployment runtime-logs route is a live stream and does not return the lines already stored.
+    const url = this.apiUrl(`/v1/projects/${encodeURIComponent(this.options.projectId)}/request-logs`, {
+      deploymentId,
+      environment: 'production',
+      startDate: String(now - 60 * 60 * 1000),
+      endDate: String(now),
+      page: '0',
+    });
     const response = await this.request(url);
-    // This endpoint is a live stream. Waiting for it to close always hits the request timeout.
-    return parseLogStream(await readBoundedBody(response)).flatMap((value, index) => {
-      const item = object(value);
-      const message = text(item?.message) ?? text(item?.text);
-      if (!message) return [];
-      const statusCode = typeof item?.responseStatusCode === 'number' ? item.responseStatusCode : undefined;
-      const rawLevel = text(item?.level) ?? (statusCode !== undefined && statusCode >= 500 ? 'error' : 'info');
-      const level = rawLevel === 'error' || rawLevel === 'fatal' ? 'error' : rawLevel === 'warning' || rawLevel === 'warn' ? 'warn' : 'info';
-      const timestamp = typeof item?.timestampInMs === 'number' ? item.timestampInMs
-        : typeof item?.timestamp === 'number' ? item.timestamp
-        : Date.now();
-      return [{
-        id: text(item?.rowId) ?? text(item?.id) ?? `${deploymentId}-runtime-${index}`,
-        level,
-        message: redact(message, 600),
-        ...(statusCode !== undefined ? { statusCode } : {}),
-        timestamp,
-        isError: level === 'error' || (statusCode !== undefined && statusCode >= 500),
-      }];
-    }).slice(-100);
+    const body = object(await response.json());
+    const rows = Array.isArray(body?.rows) ? body.rows : Array.isArray(body?.logs) ? body.logs : [];
+    const logs: RuntimeLog[] = [];
+    for (const row of rows) {
+      const item = object(row);
+      if (!item) continue;
+      const requestId = text(item.requestId) ?? text(item.id) ?? `${deploymentId}-${logs.length}`;
+      const statusCode = typeof item.statusCode === 'number' ? item.statusCode
+        : typeof item.responseStatusCode === 'number' ? item.responseStatusCode
+        : undefined;
+      const path = text(item.requestPath);
+      const method = text(item.requestMethod);
+      const timestamp = typeof item.timestampInMs === 'number' ? item.timestampInMs
+        : typeof item.timestamp === 'number' ? item.timestamp
+        : typeof item.timestamp === 'string' ? Date.parse(item.timestamp)
+        : now;
+      const nested = Array.isArray(item.logs) && item.logs.length > 0 ? item.logs : [item];
+      nested.forEach((entry, index) => {
+        const line = object(entry);
+        const message = text(line?.message) ?? text(line?.text);
+        if (!message) return;
+        const rawLevel = text(line?.level) ?? (statusCode !== undefined && statusCode >= 500 ? 'error' : 'info');
+        const level = rawLevel === 'error' || rawLevel === 'fatal' ? 'error' : rawLevel === 'warning' || rawLevel === 'warn' ? 'warn' : 'info';
+        const where = [method, path].filter(Boolean).join(' ');
+        logs.push({
+          id: `${requestId}:${index}`,
+          level,
+          message: redact(where ? `${where} — ${message}` : message, 600),
+          ...(statusCode !== undefined ? { statusCode } : {}),
+          timestamp: Number.isFinite(timestamp) ? timestamp : now,
+          isError: level === 'error' || (statusCode !== undefined && statusCode >= 500),
+        });
+      });
+    }
+    return logs.slice(-100);
   }
 
   async getDeploymentLogs(projectId: string, deploymentId: string): Promise<string[]> {
@@ -348,34 +372,6 @@ export class VercelProvider implements DeploymentProvider {
       throw new Error('Deployment probe failed or timed out.');
     }
   }
-}
-
-/** Read a streaming log body until it ends, goes quiet, or the cap is reached. */
-async function readBoundedBody(response: Response, idleMs = 1_500, maxMs = 6_000): Promise<string> {
-  const body = response.body;
-  if (!body) return '';
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let raw = '';
-  const started = Date.now();
-  try {
-    while (Date.now() - started < maxMs) {
-      const pending = reader.read();
-      const piece = await Promise.race([
-        pending.then(value => ({ kind: 'chunk' as const, value })),
-        new Promise<{ kind: 'idle' }>(resolve => setTimeout(() => resolve({ kind: 'idle' }), idleMs)),
-      ]);
-      if (piece.kind === 'idle') break;
-      if (piece.value.done) {
-        raw += decoder.decode();
-        break;
-      }
-      raw += decoder.decode(piece.value.value, { stream: true });
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
-  return raw;
 }
 
 function parseLogStream(raw: string): unknown[] {

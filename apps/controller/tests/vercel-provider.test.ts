@@ -41,11 +41,30 @@ function mockProvider(options: { rateLimited?: boolean } = {}) {
     if (url.pathname === '/v13/deployments/dpl_previous') return Response.json(previousDeployment);
     if (url.pathname === '/v6/deployments') return Response.json({ deployments: [currentDeployment, previousDeployment] });
     if (url.pathname === '/v7/deployments') return Response.json({ deployments: [currentDeployment, previousDeployment] }, { headers: rateHeaders });
-    if (url.pathname === '/v1/projects/prj_demo/deployments/dpl_current/runtime-logs') {
-      return new Response([
-        JSON.stringify({ rowId: 'log-1', level: 'info', message: 'request completed', responseStatusCode: 200, timestampInMs: 1 }),
-        JSON.stringify({ rowId: 'log-2', level: 'error', message: 'database password=secret', responseStatusCode: 500, timestampInMs: 2 }),
-      ].join('\n'), { headers: { 'Content-Type': 'application/json' } });
+    if (url.pathname === '/v1/projects/prj_demo/request-logs') {
+      return Response.json({
+        rows: [
+          {
+            requestId: 'req-1',
+            requestMethod: 'GET',
+            requestPath: '/api/tasks',
+            statusCode: 200,
+            timestamp: 1,
+            logs: [{ level: 'info', message: 'request completed' }],
+          },
+          {
+            requestId: 'req-2',
+            requestMethod: 'GET',
+            requestPath: '/api/tasks/crash',
+            statusCode: 500,
+            timestamp: 2,
+            logs: [
+              { level: 'error', message: 'database password=secret' },
+              { level: 'error', message: 'Task service failed while reading a task.' },
+            ],
+          },
+        ],
+      });
     }
     if (url.pathname === '/v3/deployments/dpl_current/events') {
       return new Response([
@@ -177,23 +196,14 @@ describe('VercelProvider', () => {
   it('reads runtime logs and marks server failures without leaking secrets', async () => {
     const { provider, calls } = mockProvider();
     const logs = await provider.getRuntimeLogs(projectId, 'dpl_current');
-    expect(logs.map(log => log.message)).toEqual(['request completed', 'database password=[REDACTED]']);
+    expect(logs.map(log => log.message)).toEqual([
+      'GET /api/tasks — request completed',
+      'GET /api/tasks/crash — database password=[REDACTED]',
+      'GET /api/tasks/crash — Task service failed while reading a task.',
+    ]);
     expect(logs[1]?.isError).toBe(true);
-    expect(logs[1]?.statusCode).toBe(500);
-    expect(calls.some(call => call.url.pathname === '/v1/projects/prj_demo/deployments/dpl_current/runtime-logs')).toBe(true);
-  });
-
-  it('returns runtime logs when the Vercel stream stays open', async () => {
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ rowId: 'log-open', level: 'error', message: 'Task service failed', responseStatusCode: 500, timestampInMs: 3 })}\n`));
-      },
-    });
-    const fetchMock = (async () => new Response(stream, { headers: { 'Content-Type': 'application/stream+json' } })) as typeof fetch;
-    const provider = new VercelProvider({ accessToken: token, projectId, productionDomain: 'demo.example.com', fetch: fetchMock });
-    const logs = await provider.getRuntimeLogs(projectId, 'dpl_current');
-    expect(logs.map(log => log.message)).toEqual(['Task service failed']);
-    expect(logs[0]?.statusCode).toBe(500);
+    expect(logs[2]?.statusCode).toBe(500);
+    expect(calls.some(call => call.url.pathname === '/v1/projects/prj_demo/request-logs')).toBe(true);
   });
 
   it('reads bounded deployment events and marks failures without leaking secrets', async () => {
