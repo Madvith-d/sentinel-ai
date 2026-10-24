@@ -650,7 +650,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .login-card { border-color: #303030; background: #0d0d0d; }
 
 .telemetry-panel { margin-top: 18px; }
-.telemetry-probe { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: #0b0b0b; }
+.telemetry-probe { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: #0b0b0b; }
 .telemetry-probe > div { display: grid; gap: 5px; }
 .telemetry-label { color: var(--faint); font-size: 9px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
 .probe-result { font-family: 'Space Grotesk', sans-serif; }
