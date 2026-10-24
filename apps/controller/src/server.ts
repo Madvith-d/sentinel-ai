@@ -9,7 +9,7 @@ import { dispatchRun } from './remediation';
 import { startPollingWorker, type PollingWorker } from './worker';
 import { VercelProvider } from './vercel-provider';
 import { CoolifyProvider, RailwayProvider, RenderProvider } from './platform-providers';
-import type { DeploymentProvider, DeploymentSummary, RuntimeLog } from './monitor';
+import { checkProject, serverErrorSignature, type DeploymentProvider, type DeploymentSummary, type RuntimeLog } from './monitor';
 import { createControllerActions, type RemediationConfig } from './actions';
 import { applyStoredSettings, createSettingsApi } from './settings';
 import { disconnectFields, exchangeGithubManifest, githubConnectTarget, githubCredentials, githubStateOk, installationExists, listInstallationRepositories, matchingVercelProject, verifyGithubWebhook } from './github-app';
@@ -78,7 +78,7 @@ function readMonitorConfig(): MonitorConfig {
   if (!Number.isInteger(deploymentStatusIntervalMs) || deploymentStatusIntervalMs < 1_000 || deploymentStatusIntervalMs > 600_000) {
     throw new Error('CONTROLLER_DEPLOYMENT_STATUS_INTERVAL_MS must be between 1000 and 600000.');
   }
-  const logsIntervalMs = Number(process.env.CONTROLLER_LOGS_INTERVAL_MS ?? 300_000);
+  const logsIntervalMs = Number(process.env.CONTROLLER_LOGS_INTERVAL_MS ?? 60_000);
   if (!Number.isInteger(logsIntervalMs) || logsIntervalMs < 60_000 || logsIntervalMs > 600_000) {
     throw new Error('CONTROLLER_LOGS_INTERVAL_MS must be between 60000 and 600000.');
   }
@@ -168,7 +168,7 @@ const watch = {
   probePath: monitorConfig?.probePath ?? '/api/tasks',
   rollbackEnabled: Boolean(monitorConfig?.rollbackEnabled),
   intervalMs: monitorConfig?.pollIntervalMs ?? 30_000,
-  logsIntervalMs: monitorConfig?.logsIntervalMs ?? 300_000,
+  logsIntervalMs: monitorConfig?.logsIntervalMs ?? 60_000,
   failures: 0,
   probe: null as { checkedAt: string; result: 'pass' | 'fail' | 'unknown'; evidence: string; statusCode?: number } | null,
   logs: [] as RuntimeLog[],
@@ -303,6 +303,48 @@ function launchMonitor(config: MonitorConfig): void {
       watch.logsCheckedAt = new Date().toISOString();
     };
 
+    let logSignature: string | undefined;
+    const logProvider = new Proxy(config.provider, {
+      get(target, property, receiver) {
+        if (property === 'getLatestDeploymentStatus') return undefined;
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const observeRuntime = async (deploymentId: string, fresh: RuntimeLog[]): Promise<void> => {
+      const signature = fresh.map(serverErrorSignature).filter((item): item is string => Boolean(item)).at(-1);
+      if (!signature) {
+        if (logSignature) {
+          logSignature = undefined;
+          await store.recordProbe(config.projectId, deploymentId, 'runtime-log', 'pass', new Date().toISOString());
+        }
+        return;
+      }
+      if (signature !== logSignature) {
+        logSignature = signature;
+        await store.recordProbe(config.projectId, deploymentId, 'runtime-log', 'pass', new Date().toISOString());
+      }
+      const result = await checkProject({
+        projectId: config.projectId,
+        allowlistedProjectIds: config.rollbackEnabled ? new Set([config.projectId]) : new Set(),
+        probePath: config.probePath,
+        provider: logProvider,
+        store,
+        actions,
+        logSignal: { evidence: `Server log repeated: ${signature}` },
+      });
+      if (result.action === 'monitor' && result.consecutiveFailures > watch.failures) {
+        watch.failures = result.consecutiveFailures;
+        watch.outcome = 'failing';
+        watch.detail = result.reason;
+      } else if (result.action === 'incident' && (!result.duplicate || result.updated)) {
+        watch.failures = 3;
+        watch.outcome = 'incident';
+        watch.detail = `${result.incident.status}: ${result.incident.evidence[0] ?? 'Incident recorded.'}`;
+        console.info(`Incident ${result.incident.id}: ${result.incident.status}`);
+      }
+    };
+
     const runPullCycle = async (): Promise<void> => {
       if (logsPulling) return;
       logsPulling = true;
@@ -311,6 +353,17 @@ function launchMonitor(config: MonitorConfig): void {
         const deployments: DeploymentSummary[] = await listDeploymentsSince(config.projectId, since);
         for (const deployment of deployments) {
           if (!pulled.has(deployment.id) || incomplete.has(deployment.id)) await pullDeployment(deployment);
+        }
+        if (config.provider.getRuntimeLogs) {
+          const current = await config.provider.getProductionDeployment(config.projectId);
+          if (current) {
+            const logs = await config.provider.getRuntimeLogs(config.projectId, current.id);
+            const fresh = await store.saveRuntimeLogs(config.projectId, current.id, logs);
+            watch.deployment = { id: current.id, url: current.immutableUrl, createdAt: current.createdAt };
+            watch.logsSource = 'runtime-logs';
+            watch.logs = logs.slice(-50);
+            await observeRuntime(current.id, fresh);
+          }
         }
         watch.logsCheckedAt = new Date().toISOString();
         watch.logsError = null;
@@ -330,6 +383,7 @@ function launchMonitor(config: MonitorConfig): void {
         if (current) await bindDisplay(current);
       } catch { /* the first scheduled cycle retries */ }
     })();
+    void runPullCycle();
     logsTimer = setInterval(() => { void runPullCycle(); }, config.logsIntervalMs);
     // The production alias can move at any moment (a new deploy promoted or a
     // rollback). Detect the switch so the panel names the deployment that

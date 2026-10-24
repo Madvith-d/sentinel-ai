@@ -43,6 +43,12 @@ function everyLabel(ms: number) {
   return seconds >= 120 ? `${Math.max(1, Math.round(seconds / 60))}m` : `${seconds}s`;
 }
 
+function nextIn(from: string | null | undefined, intervalMs: number, now: Date) {
+  if (!from) return '—';
+  const remaining = Math.ceil((new Date(from).getTime() + intervalMs - now.getTime()) / 1000);
+  return remaining <= 0 ? 'due' : `${remaining}s`;
+}
+
 function hostOf(value?: string) {
   if (!value) return '—';
   try { return new URL(value).host; } catch { return value; }
@@ -154,11 +160,18 @@ type WatchLog = {
 };
 
 function WatchTelemetry({ watch }: { watch: WatchState | null }) {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
   const probe = watch?.probe;
   const logs = watch?.logs ?? [];
   const deployment = watch?.deployment ?? null;
   const probeEvery = everyLabel(watch?.intervalMs ?? 30_000);
-  const logsEvery = everyLabel(watch?.logsIntervalMs ?? 300_000);
+  const logsEvery = everyLabel(watch?.logsIntervalMs ?? 60_000);
+  const nextProbe = nextIn(watch?.checkedAt, watch?.intervalMs ?? 30_000, now);
+  const nextLogs = nextIn(watch?.logsCheckedAt, watch?.logsIntervalMs ?? 60_000, now);
   return <section className="panel telemetry-panel" aria-live="polite">
     <div className="section-heading">
       <h2>Production telemetry</h2>
@@ -179,11 +192,15 @@ function WatchTelemetry({ watch }: { watch: WatchState | null }) {
         <span className="telemetry-label">Checked</span>
         <strong>{probe ? formatTime(probe.checkedAt) : '—'}</strong>
       </div>
+      <div>
+        <span className="telemetry-label">Next probe</span>
+        <strong>{nextProbe}</strong>
+      </div>
     </div>
     {probe?.result === 'fail' && <p className="probe-error">{probe.evidence}</p>}
     <div className="log-heading">
       <strong>Vercel {watch?.logsSource === 'deployment-events' ? 'deployment events' : 'runtime logs'}{deployment ? <span className="mono log-deployment">{shortDeployment(deployment.id)}</span> : null}</strong>
-      <span>{watch?.logsCheckedAt ? `Updated ${formatTime(watch.logsCheckedAt)}` : 'Waiting for first log pull'}</span>
+      <span>{watch?.logsCheckedAt ? `Updated ${formatTime(watch.logsCheckedAt)} · next ${nextLogs}` : 'Waiting for first log pull'}</span>
     </div>
     {watch?.logsSource === 'deployment-events' && <p className="log-fallback-note">Runtime logs are unavailable on this Vercel plan, so the build and deployment events of the same deployment are shown.</p>}
     {watch?.logsError && <p className="telemetry-error" role="status">{watch.logsError}</p>}
@@ -307,12 +324,14 @@ function LiveWatch({ onWatch }: { onWatch?: (watch: WatchState) => void }) {
   }, []);
   const checked = watch?.checkedAt ? new Date(watch.checkedAt) : null;
   const age = checked ? Math.max(0, Math.round((clock.getTime() - checked.getTime()) / 1000)) : null;
+  const probeNext = nextIn(watch?.checkedAt, watch?.intervalMs ?? 30_000, clock);
+  const logsNext = nextIn(watch?.logsCheckedAt, watch?.logsIntervalMs ?? 60_000, clock);
   const time = clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   return <div className={`live-watch ${watch?.outcome ?? 'starting'}`} aria-live="polite">
     <strong className="live-clock">{time}</strong>
     {mode === 'fixtures'
       ? <span>Rehearsal data · local clock only</span>
-      : <span>{checkLabel(watch)}{watch?.probePath ? ` · ${watch.probePath}` : ''}{age !== null ? ` · ${age}s ago` : ''}</span>}
+      : <span>{checkLabel(watch)}{watch?.probePath ? ` · ${watch.probePath}` : ''}{age !== null ? ` · ${age}s ago` : ''}{watch?.checkedAt ? ` · next probe ${probeNext}` : ''}{watch?.logsCheckedAt ? ` · next logs ${logsNext}` : ''}</span>}
   </div>;
 }
 

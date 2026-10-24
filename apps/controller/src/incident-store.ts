@@ -1,5 +1,6 @@
 import postgres, { type Sql } from 'postgres';
 import type { Incident } from '@nexathon/contracts';
+import type { RuntimeLog } from './monitor';
 
 interface StoredIncident { incident_json: Incident; }
 export interface StoredAgentRun {
@@ -27,6 +28,7 @@ interface MemoryState {
   rollbackAttempts: Set<string>;
   settings: Map<string, string>;
   agentRuns: Map<string, StoredAgentRun & { events: StoredAgentEvent[] }>;
+  runtimeLogs: Map<string, RuntimeLog & { projectId: string; deploymentId: string }>;
 }
 type StoreValue<T> = T | Promise<T>;
 
@@ -55,7 +57,7 @@ function agentEventFromRow(row: Record<string, unknown>): StoredAgentEvent {
 }
 
 function memoryState(): MemoryState {
-  return { incidents: new Map(), probeStreaks: new Map(), rollbackAttempts: new Set(), settings: new Map(), agentRuns: new Map() };
+  return { incidents: new Map(), probeStreaks: new Map(), rollbackAttempts: new Set(), settings: new Map(), agentRuns: new Map(), runtimeLogs: new Map() };
 }
 
 export class IncidentStore {
@@ -118,6 +120,17 @@ export class IncidentStore {
       )
     `;
     await this.sql!`CREATE INDEX IF NOT EXISTS agent_runs_started_at_idx ON agent_runs (started_at DESC)`;
+    await this.sql!`
+      CREATE TABLE IF NOT EXISTS runtime_logs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        deployment_id TEXT NOT NULL,
+        level TEXT NOT NULL,
+        message TEXT NOT NULL,
+        status_code INTEGER,
+        logged_at BIGINT NOT NULL
+      )
+    `;
     await this.sql!`
       CREATE TABLE IF NOT EXISTS agent_events (
         run_id TEXT NOT NULL,
@@ -263,6 +276,37 @@ export class IncidentStore {
       const row = rows[0] as { consecutive_failures: number; first_failure_at: string | null };
       return { consecutiveFailures: row.consecutive_failures, ...(row.first_failure_at ? { firstFailureAt: row.first_failure_at } : {}) };
     });
+  }
+
+  saveRuntimeLogs(projectId: string, deploymentId: string, logs: RuntimeLog[]): StoreValue<RuntimeLog[]> {
+    const fresh: RuntimeLog[] = [];
+    if (this.memory) {
+      for (const log of logs) {
+        if (this.memory.runtimeLogs.has(log.id)) continue;
+        this.memory.runtimeLogs.set(log.id, { ...log, projectId, deploymentId });
+        fresh.push(log);
+      }
+      const own = [...this.memory.runtimeLogs.entries()].filter(([, log]) => log.projectId === projectId);
+      own.sort((a, b) => b[1].timestamp - a[1].timestamp).slice(200).forEach(([id]) => this.memory!.runtimeLogs.delete(id));
+      return fresh;
+    }
+    return (async () => {
+      for (const log of logs) {
+        const rows = await this.sql!`
+          INSERT INTO runtime_logs (id, project_id, deployment_id, level, message, status_code, logged_at)
+          VALUES (${log.id}, ${projectId}, ${deploymentId}, ${log.level}, ${log.message}, ${log.statusCode ?? null}, ${log.timestamp})
+          ON CONFLICT (id) DO NOTHING
+          RETURNING id
+        `;
+        if (rows.length === 1) fresh.push(log);
+      }
+      await this.sql!`
+        DELETE FROM runtime_logs WHERE project_id = ${projectId} AND id NOT IN (
+          SELECT id FROM runtime_logs WHERE project_id = ${projectId} ORDER BY logged_at DESC LIMIT 200
+        )
+      `;
+      return fresh;
+    })();
   }
 
   claimRollback(deploymentId: string, at: string): StoreValue<boolean> {

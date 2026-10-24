@@ -174,6 +174,15 @@ describe('VercelProvider', () => {
     expect(onlyCurrent.map(item => item.id)).toEqual(['dpl_current']);
   });
 
+  it('reads runtime logs and marks server failures without leaking secrets', async () => {
+    const { provider, calls } = mockProvider();
+    const logs = await provider.getRuntimeLogs(projectId, 'dpl_current');
+    expect(logs.map(log => log.message)).toEqual(['request completed', 'database password=[REDACTED]']);
+    expect(logs[1]?.isError).toBe(true);
+    expect(logs[1]?.statusCode).toBe(500);
+    expect(calls.some(call => call.url.pathname === '/v1/projects/prj_demo/deployments/dpl_current/runtime-logs')).toBe(true);
+  });
+
   it('reads bounded deployment events and marks failures without leaking secrets', async () => {
     const { provider, calls } = mockProvider();
     const logs = await provider.getDeploymentEvents(projectId, 'dpl_current');

@@ -87,7 +87,7 @@ async function session(socket: Socket | TLSSocket, reader: Reader, config: SmtpC
   await activeReader.command(active, `RCPT TO:<${config.to}>`, [250, 251]);
   await activeReader.command(active, 'DATA', [354]);
   const boundary = `----=_Nexathon_${Date.now().toString(16)}`;
-  const body = [
+  const message = [
     `From: ${config.from}`,
     `To: ${config.to}`,
     `Subject: ${subject.replace(/[\r\n]/g, ' ').slice(0, 180)}`,
@@ -107,9 +107,8 @@ async function session(socket: Socket | TLSSocket, reader: Reader, config: SmtpC
       html,
       `--${boundary}--`,
     ] : [text]),
-    '.',
   ].join('\r\n');
-  await activeReader.command(active, dotStuff(body), [250]);
+  await activeReader.command(active, `${dotStuff(message)}\r\n.`, [250]);
   await activeReader.command(active, 'QUIT', [221]);
 }
 
