@@ -183,6 +183,19 @@ describe('VercelProvider', () => {
     expect(calls.some(call => call.url.pathname === '/v1/projects/prj_demo/deployments/dpl_current/runtime-logs')).toBe(true);
   });
 
+  it('returns runtime logs when the Vercel stream stays open', async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ rowId: 'log-open', level: 'error', message: 'Task service failed', responseStatusCode: 500, timestampInMs: 3 })}\n`));
+      },
+    });
+    const fetchMock = (async () => new Response(stream, { headers: { 'Content-Type': 'application/stream+json' } })) as typeof fetch;
+    const provider = new VercelProvider({ accessToken: token, projectId, productionDomain: 'demo.example.com', fetch: fetchMock });
+    const logs = await provider.getRuntimeLogs(projectId, 'dpl_current');
+    expect(logs.map(log => log.message)).toEqual(['Task service failed']);
+    expect(logs[0]?.statusCode).toBe(500);
+  });
+
   it('reads bounded deployment events and marks failures without leaking secrets', async () => {
     const { provider, calls } = mockProvider();
     const logs = await provider.getDeploymentEvents(projectId, 'dpl_current');

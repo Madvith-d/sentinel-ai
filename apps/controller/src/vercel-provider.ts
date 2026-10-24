@@ -244,7 +244,8 @@ export class VercelProvider implements DeploymentProvider {
     if (!deploymentId.trim()) throw new Error('Vercel deployment ID is required.');
     const url = this.apiUrl(`/v1/projects/${encodeURIComponent(this.options.projectId)}/deployments/${encodeURIComponent(deploymentId)}/runtime-logs`);
     const response = await this.request(url);
-    return parseLogStream(await response.text()).flatMap((value, index) => {
+    // This endpoint is a live stream. Waiting for it to close always hits the request timeout.
+    return parseLogStream(await readBoundedBody(response)).flatMap((value, index) => {
       const item = object(value);
       const message = text(item?.message) ?? text(item?.text);
       if (!message) return [];
@@ -347,6 +348,34 @@ export class VercelProvider implements DeploymentProvider {
       throw new Error('Deployment probe failed or timed out.');
     }
   }
+}
+
+/** Read a streaming log body until it ends, goes quiet, or the cap is reached. */
+async function readBoundedBody(response: Response, idleMs = 1_500, maxMs = 6_000): Promise<string> {
+  const body = response.body;
+  if (!body) return '';
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let raw = '';
+  const started = Date.now();
+  try {
+    while (Date.now() - started < maxMs) {
+      const pending = reader.read();
+      const piece = await Promise.race([
+        pending.then(value => ({ kind: 'chunk' as const, value })),
+        new Promise<{ kind: 'idle' }>(resolve => setTimeout(() => resolve({ kind: 'idle' }), idleMs)),
+      ]);
+      if (piece.kind === 'idle') break;
+      if (piece.value.done) {
+        raw += decoder.decode();
+        break;
+      }
+      raw += decoder.decode(piece.value.value, { stream: true });
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return raw;
 }
 
 function parseLogStream(raw: string): unknown[] {

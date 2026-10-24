@@ -72,7 +72,13 @@ export class IncidentStore {
       return;
     }
     if (!connectionString) throw new Error('DATABASE_URL is required; PostgreSQL replaces the former SQLite store.');
-    this.sql = postgres(connectionString, { max: 5, idle_timeout: 20 });
+    this.sql = postgres(connectionString, {
+      max: 5,
+      idle_timeout: 20,
+      max_lifetime: 60 * 30,
+      connect_timeout: 30,
+      keep_alive: 15,
+    });
     this.ready = this.initialize();
   }
 
