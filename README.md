@@ -1,192 +1,261 @@
-# Nexathon — Autonomous Incident Remediation Agent
+# Sentinel
 
-> **Status: planning / work assignment.** This repository currently contains the MVP specification, not a working application. The three team members will implement the components below during a 10-hour build. Do not present planned features as already implemented.
+Sentinel is a incident-response control plane for a separately deployed
+web application. It checks application health and deployment status, records
+evidence, and chooses a guarded response: roll back a recent production
+regression, prepare a tested draft pull request for a persistent defect or
+failed build, or escalate when evidence is inconclusive. A local web dashboard
+shows incidents and remediation activity; notifications can be delivered by
+Slack or SMTP.
 
-## What we are building
+The repository includes a deliberately breakable sample application for
+demonstrations. It is not the dashboard and should not be treated as a
+production target.
 
-A small, demonstrable DevOps agent that detects a broken Vercel deployment or a failing application route, investigates the associated GitHub revision, and takes one of two actions:
+## Project status and scope
 
-1. **Fresh regression:** The current production deployment fails, but the immediately previous deployment passes the same probe. The controller automatically rolls back the **demo project**, verifies recovery, and sends a developer report to Slack. No code is merged automatically.
-2. **Persistent defect or broken build:** Rolling back would not help, or the build never reached production. An E2B sandbox runs Supercharge CLI against a cloned repository, reproduces the failure, produces a patch, runs tests/build, and creates a **draft GitHub PR** for human review. A Slack message links the incident and PR.
+The codebase contains working controller, dashboard, sample-app, and shared
+package implementations. Monitoring, rollback, and AI remediation are disabled
+by default and require explicit configuration. This is a project-scoped demo
+and operator-assistance tool, not a general-purpose monitoring service:
 
-The local dashboard shows the evidence, decision, status, rollback or PR, and a chronological incident timeline. The Vercel app is a deliberately breakable **sample target**, not the dashboard itself.
+- The controller monitors configured services on a polling schedule; it does
+  not ingest a continuous Datadog or Sentry event stream.
+- Supported deployment providers are Vercel, Railway, Render, and Coolify.
+- Automatic rollback is guarded by project configuration, deployment identity,
+  probe results, and a one-attempt-per-deployment claim. Enable it only for a
+  dedicated demo service you control.
+- Remediation runs in an E2B sandbox and can publish a **draft** GitHub PR only
+  after reproduction and validation checks. It does not merge PRs.
+- The dashboard and controller are designed to run in a trusted local or
+  private environment. Do not expose the controller to the public internet.
 
-### Honest MVP boundary
+## Architecture
+![flow_chart](architecture.png)
 
-- **Detection:** Health probes every 30 seconds and Vercel deployment-status checks about every 60 seconds. Collect relevant logs when diagnosing an incident. This is **not** continuous Datadog/Sentry log-stream ingestion.
-- **Hosting:** The sample app is deployed to Vercel; the controller, SQLite database, and dashboard run on a teammate's laptop during the demo. We have **E2B Pro, not Vercel Pro**; do not make Vercel paid webhooks/log drains a dependency.
-- **Scope:** One explicitly configured Vercel project and this GitHub repository. No general-purpose production access, database rollback, automatic PR merge, or broad multi-tenant platform.
-- **Agent:** Supercharge CLI runs headlessly *inside E2B*. Its provider/model must be configured with a **dedicated, spend-limited key** for the sandbox; do not copy anyone's personal `~/.supercharge/config.toml` into a repository or sandbox.
+### Main components
 
-## Technology stack (team-wide decision)
+| Component | Responsibility |
+| --- | --- |
+| `apps/controller` | Bun HTTP API, dashboard authentication, polling worker, provider adapters, incident decisions, actions, PostgreSQL persistence, settings, and agent activity streaming. |
+| `apps/dashboard` | Next.js and React incident UI, login/setup screens, API client, and live remediation activity. It reads incidents through the controller; it does not initiate agent runs from the browser. |
+| `apps/sample` | Standalone Next.js app (`TaskFlow`) used as the monitored target and to rehearse healthy, runtime-regression, and persistent-failure scenarios. |
+| `packages/contracts` | Shared incident/event types and the controller/remediator data boundary. |
+| `packages/remediator` | E2B-based fix workflow: clone a configured repository revision, reproduce the failure, produce and validate a patch, then optionally publish a draft PR from the controller environment. |
+| `packages/notifier` | Redacted incident report formatting and Slack/SMTP delivery. Notification failures are recorded separately from recovery actions. |
 
-- **Bun 1.x everywhere we control:** Bun is the TypeScript runtime, package manager, lockfile (`bun.lock`), script runner, and test runner. Use `bun install`, `bun run ...`, and `bun test`—do not add npm/pnpm/Yarn lockfiles. The root workspace currently pins `bun@1.3.11` for local consistency.
-- **Target deployment:** Vercel with a Bun function runtime configured by `apps/sample/vercel.json` (`bunVersion: "1.x"`; Vercel manages the minor/patch version). The sample app is a separate Vercel project. Bun is supported on all plans, but the Vercel function runtime is Beta.
-- **Controller:** Bun + TypeScript, PostgreSQL, Vercel CLI/API, and a localhost HTTP API.
-- **Remediator:** Bun + TypeScript controller package, E2B JavaScript SDK, Supercharge CLI inside E2B, read-only GitHub MCP for diagnosis; GitHub CLI on the controller for branch/draft PR.
-- **Dashboard and alerts:** Lightweight React/Vite UI served locally via Bun; Slack incoming webhook. Madvit can keep the UI minimal to reserve time for the PPT.
+### Incident flow and safeguards
 
-### Start working now
+1. The worker probes the configured production route (30 seconds by default)
+   and periodically checks deployment status (60 seconds by default). It can
+   retrieve bounded deployment-log evidence.
+2. The controller tracks consecutive failures for the same project,
+   deployment, and probe path. It requires three failures before runtime action.
+3. Before considering rollback, it verifies the current production deployment,
+   checks that it is recent and allowlisted, and probes the immediate
+   predecessor on the same route.
+4. A fresh regression with a healthy predecessor can take the guarded rollback
+   path, followed by bounded recovery verification. A failed build or defect
+   that also affects the predecessor goes to the fix-PR path instead.
+5. Missing or conflicting evidence, failed verification, a failed sandbox, or
+   other unsafe conditions are escalated for human review. The controller
+   prevents a second rollback attempt for the same deployment.
+6. The dashboard shows incident history and safe agent progress. Notifications
+   contain concise redacted summaries. No path automatically merges code.
 
-1. Install Bun 1.x and run `bun install` at the repository root.
-2. Create your own branch from updated `main`: `anish/remediator`, `ronit/controller`, or `madvit/dashboard-pitch`. If your branch already exists, merge/rebase the new scaffold instead of recreating it.
-3. Work in your assigned directories below. Each directory has a README, and implemented packages can add Bun scripts to their `package.json` as they land.
-4. Keep `.env` files local. Add only redacted `.env.example` templates, not tokens. The project folders are **scaffolds**, not running applications yet.
+Vercel note: after a production rollback, automatic production-domain
+assignment can be disabled until a human promotes a repaired deployment.
 
-## Folder structure (already created on `main`)
+## Repository layout
 
 ```text
 nexathon/
 ├── apps/
-│   ├── sample/              # Ronit: Vercel target app, api/, tests/, vercel.json
-│   ├── controller/          # Ronit: Bun worker, SQLite, decision engine, local API
-│   └── dashboard/           # Madvit: local incident UI, screenshots for PPT
+│   ├── controller/
+│   │   ├── src/                 # API, auth, worker, monitor, providers, actions
+│   │   ├── tests/               # Controller unit and integration-oriented tests
+│   │   ├── .env.example         # Local configuration template (no real secrets)
+│   │   └── README.md            # Controller-specific run and configuration notes
+│   ├── dashboard/
+│   │   ├── src/                 # Next.js pages, UI, API hooks, fixtures and styles
+│   │   ├── tests/               # Dashboard parsing/activity tests
+│   │   ├── public/              # Static assets
+│   │   ├── DESIGN.md            # UI design reference
+│   │   └── PRODUCT.md           # Product reference
+│   └── sample/
+│       ├── src/app/             # TaskFlow UI and health/tasks API routes
+│       ├── src/lib/             # Sample task data and helpers
+│       ├── tests/               # Sample API tests
+│       ├── vercel.json          # Vercel runtime configuration
+│       └── README.md            # Sample app, fault modes and deploy steps
 ├── packages/
-│   ├── contracts/           # Ronit: incident types and shared fixtures
-│   ├── notifier/            # Madvit: Slack formatting/sending
-│   └── remediator/          # Anish: E2B + Supercharge + GitHub MCP + PR handoff
-├── docs/
-│   └── slides/              # Madvit: pitch deck/diagrams; docs/demo.md later
-├── package.json             # Bun workspace definitions
-├── bun.lock                 # The only package-manager lockfile
-└── README.md                # Team plan, hourly assignments, acceptance tests
+│   ├── contracts/src/           # Shared TypeScript contracts
+│   ├── notifier/src/            # Report formatting and Slack/SMTP transports
+│   └── remediator/
+│       ├── src/                 # E2B runner, validation, activity, PR publisher
+│       ├── tests/               # Remediator validation/activity tests
+│       ├── fixtures/            # Rehearsal-only regression fixtures
+│       └── e2b-template/        # Custom sandbox image definition
+├── docs/                        # Demo guide and presentation material
+├── scripts/                     # Demo scripts
+├── docker-compose.yml           # Controller container service
+├── Dockerfile                   # Controller production image
+├── package.json                 # Bun workspace and root scripts
+└── bun.lock                     # Bun dependency lockfile
 ```
 
-The `src/`, `api/`, `tests/`, and `public/` directories are also tracked with placeholders so everyone can pull and begin in their assigned folder immediately. **Do not create a second root project or a second lockfile.**
+Generated directories such as `node_modules`, `.next`, and build output are not
+source; the tree above omits them.
 
-## Team ownership
+## Requirements
 
-| Person | Primary ownership | Deliverable by hour 7 | Avoid editing |
-| --- | --- | --- | --- |
-| **Anish Kumar** | E2B, Supercharge CLI, read-only GitHub MCP, reproduction/patch/test, draft-PR workflow | A failing persistent-bug incident produces a tested draft PR and evidence bundle | Controller decision rules and dashboard UI |
-| **Ronit** | Sample Vercel app, monitoring worker, incident persistence/API, decision rules, guarded rollback | A fresh bad deployment is detected, rolled back once, and verified healthy | E2B runner and dashboard UI |
-| **Madvit** | Lightweight dashboard, Slack presentation, demo script, and **PPT** | Incident timeline and Slack report work; pitch deck/demo are ready | Remediation and rollback internals |
+- [Bun](https://bun.sh/) 1.3.11 or later (the root workspace pins 1.3.11)
+- PostgreSQL for persistent controller state
+- Node.js 20.9 or later when building/running the Next.js apps in environments
+  that require Node
+- Optional service-specific credentials for monitoring/rollback, E2B and model
+  credentials for AI remediation, GitHub credentials for draft PR creation, and
+  Slack or SMTP configuration for notifications
 
-**Workload note:** Madvit has less backend work because the PPT and presentation are a real deliverable. Anish and Ronit own the two risky engineering paths. Slack formatting can live in a separate notifier module owned by Madvit; Ronit calls it from the controller rather than both people editing the same files.
+## Local development
 
-### Suggested non-overlapping directories
+### 1. Install workspace dependencies
 
-- Ronit: `apps/sample/`, `apps/controller/`, `packages/contracts/` and the root workspace setup.
-- Anish: `packages/remediator/` (E2B/Supercharge/MCP/PR adapter and tests).
-- Madvit: `apps/dashboard/`, `packages/notifier/`, `docs/demo.md` and slides outside the runtime code.
+From the repository root:
 
-Ronit publishes the shared incident contract by the end of **hour 1**; Anish and Madvit develop against that contract and fixtures. If a contract change is needed, agree on it in the team chat before editing it.
-
-## Hour-by-hour execution plan
-
-Hours are elapsed hours **from the start of the hackathon build**, not clock times. At the end of each hour, push a small working commit and post a 1-minute status update in the team chat: done, next, blocker.
-
-| Hour | Anish Kumar — E2B / Supercharge | Ronit — monitor / rollback | Madvit — UI / Slack / PPT |
-| --- | --- | --- | --- |
-| **0–1** | Verify E2B sandbox creation, Supercharge installation/headless invocation, and a dedicated model-provider credential. | Scaffold workspace; define shared incident contract; deploy known-good sample app to Vercel. | Sketch incident screen; outline PPT: problem, architecture, two decisions, live demo, safety. |
-| **1–2** | Clone public repo in E2B; configure read-only GitHub MCP; prove repository/PR lookup. | Implement local 30-second route probe and 60-second deployment-status poll. | Build incident list/detail shell; draw architecture slide. |
-| **2–3** | Create a deterministic failing test for the seeded persistent defect; capture before-patch failure. | Store incidents in SQLite with current/previous deployment URL, SHA, probe results, and timestamps. | Connect UI to shared fixture incidents; draft before/after and safety slides. |
-| **3–4** | Invoke Supercharge one-shot on incident evidence; capture diff, diagnosis, test/build output. | Classify fresh regression versus persistent defect/build failure; deduplicate by deployment and failure fingerprint. | Show evidence, decision, action, and status in a readable timeline. |
-| **4–5** | Push `agent/incident-<id>` branch and open a **draft PR only if reproduction fails before and passes after**. | Add project-scoped guarded Vercel rollback, one-action lock, and post-rollback probe. | Add Slack incident/PR formatting and webhook sender; complete first PPT draft. |
-| **5–6** | Connect the remediator to the controller's fix dispatch; keep GitHub write credentials in controller, not E2B. | Connect persistence → decision → rollback/fix dispatch; expose read-only dashboard API. | Replace fixture UI with live API; add Slack links and real screenshots to slides. |
-| **6–7** | Demonstrate older defect end to end: incident → E2B → tests → draft PR. | Demonstrate new bad deploy end to end: three failed probes → rollback → healthy probe. | Verify both incident views and Slack reports; prepare a 3-minute talk track. |
-| **7–8** | Handle sandbox timeout, failed tests, invalid patch, and no-PR outcomes. | Test failed build without rollback, duplicate alerts, missing healthy predecessor, and rollback failure. | Finish small-screen UI and demo instructions; lock PPT content. |
-| **8–9** | Rehearse the live fix path; leave a clean reproducible defect ready for the demo. | Reset to known-good deployment; rehearse live rollback and verify project/token scope. | Lead pitch rehearsal, collect feedback, finalize slides. **Feature freeze.** |
-| **9–10** | Run the E2B/Supercharge part of a full dress rehearsal; own fix-path recovery if it fails. | Run Vercel failure/rollback part; ensure the app starts healthy. | Present the deck/dashboard, coordinate transitions, and keep a truthful screenshot backup for each flow. |
-
-### Integration gates
-
-- **End of hour 1:** Known-good app deployed; shared incident contract and fixture published; each person can start independently.
-- **End of hour 5:** Probe/rollback, E2B patch/test/PR, and dashboard/Slack each work independently on fixture input.
-- **End of hour 7:** Both live paths run through the controller and appear on dashboard/Slack.
-- **End of hour 8:** No new features. Spend the final two hours on reliability and rehearsal.
-
-If behind schedule at hour 5, **cut dashboard polish first**, then optional log enrichment. Do not cut rollback guards, the failing-before/passing-after proof, or the two end-to-end demos. A basic dashboard with a list and one detail view is enough.
-
-## Agreed integration contract
-
-Ronit owns the first version of `packages/contracts/`. The exact code can evolve, but every incident must expose the following information to the remediator, notifier, and dashboard:
-
-```ts
-type Incident = {
-  id: string;
-  kind: 'runtime_regression' | 'persistent_defect' | 'build_failure';
-  status: 'detected' | 'investigating' | 'rolling_back' | 'remediating' | 'recovered' | 'pr_opened' | 'needs_human';
-  detectedAt: string; // ISO 8601
-  projectId: string;
-  deploymentId?: string;
-  deploymentUrl?: string;
-  commitSha?: string;
-  previousDeploymentUrl?: string;
-  probePath?: string;
-  evidence: string[]; // redacted, bounded messages
-  decision?: 'rollback' | 'fix_pr' | 'escalate';
-  actionUrl?: string; // rollback deployment or GitHub PR
-  events: Array<{ at: string; type: string; message: string }>;
-};
+```sh
+bun install
 ```
 
-- **Controller → remediator:** Incident ID, repo/target SHA, redacted failure evidence, failing route or build command, and an explicit time budget. The remediator returns diagnosis, reproduction/test results, patch branch/PR URL or a failure reason. It **never** invokes Vercel rollback.
-- **Controller → dashboard:** `GET /api/incidents` and `GET /api/incidents/:id`, bound to localhost for the demo. UI can refresh every few seconds; no WebSocket required.
-- **Controller → notifier:** Incident state transition plus concise evidence and action URL. Slack failure must not prevent rollback verification or PR creation; record notification failure on the incident.
-- **Idempotency:** One active incident per `(projectId, deploymentId, failure fingerprint)`, one rollback attempt per bad deployment, one agent PR per incident.
+### 2. Configure and start the controller
 
-Do not expose an unauthenticated network endpoint that can trigger a rollback. Demo triggers and manual controls stay local to the controller machine.
+Copy `apps/controller/.env.example` to `apps/controller/.env`, then configure
+at least:
 
-## Decision and safety rules
+- `DATABASE_URL` with a PostgreSQL connection string
+- `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` for dashboard login
+- `DASHBOARD_AUTH_SECRET` with a private random value
+- `CONTROLLER_HOST=127.0.0.1` and `CONTROLLER_PORT=8787` for local development
 
-1. **Build failed before production:** Never roll back a still-healthy production deployment. Record build evidence and attempt the fix-PR path.
-2. **Runtime route failed:** Require **three consecutive failed probes** of the same representative route. Resolve the current production deployment and its immediate predecessor, then probe the predecessor's immutable URL with the **same route**.
-3. **Automatic rollback only if:** The affected deployment is the current production deployment of the allowlisted demo project, it is recent relative to the first observed failure, the previous deployment passes, the current one fails, and no rollback has already been attempted for that deployment. Verify production recovery after the action.
-4. **Fix PR if:** The previous deployment also fails, or the fault is a failed build, so rollback is unlikely to help. Require a failing reproduction before patching, passing targeted test and build afterward, and a bounded agent run. Leave the PR draft for humans to review.
-5. **Escalate if unsure:** Missing predecessor, conflicting evidence, failed verification, failed sandbox/tests, exhausted time budget, missing permissions, or a rollback that does not restore health means `needs_human` and a Slack report—not repeated production actions.
+The controller creates its tables at startup. From the repository root:
 
-**Important Vercel behavior:** After a rollback, automatic production-domain assignment can be disabled until a human promotes a repaired deployment. Mention this explicitly in the report and demo; do not imply that future pushes automatically restore the normal release flow.
+```sh
+bun run --cwd apps/controller start
+```
 
-## Demo scenarios and acceptance criteria
+The API listens at `http://127.0.0.1:8787` by default. Monitoring,
+rollback, and remediation stay disabled unless explicitly enabled in the
+controller environment. For monitoring, also configure exactly one provider
+using the corresponding variables in `.env.example`; do not enable rollback
+until project and token scopes have been verified on a disposable demo service.
 
-### A. Fresh bad deployment → rollback
+### 3. Start the dashboard
 
-Deploy a known-good revision, then deploy a revision that breaks the probed route. Within three probe failures the dashboard must show current versus previous evidence, exactly one rollback, a passing recovery probe, and a Slack developer report. No patch is merged.
+In another terminal:
 
-### B. Persistent defect → draft fix PR
+```sh
+bun run --cwd apps/dashboard dev
+```
 
-Use a defect that is reproducible on **both** current and previous deployments. The controller must not roll back. E2B/Supercharge must reproduce the failure, propose a patch, run the targeted test and build, and create a draft PR with the incident evidence and test results. Slack and dashboard link that PR.
+Open `http://127.0.0.1:5173` and sign in with the controller dashboard
+credentials. The dashboard's Next.js rewrite targets
+`http://127.0.0.1:8787` by default. If you change the controller port, set
+`CONTROLLER_API_URL` in `apps/dashboard/.env.local` to the controller's
+localhost origin.
 
-### C. Failed build → no production rollback
+For an offline UI rehearsal, set `NEXT_PUBLIC_DATA_MODE=fixtures` in the
+dashboard environment before starting it. The root `demo:rehearsal` script
+starts the dashboard in fixture mode:
 
-Break the build of a new deployment. Show the failed deployment status and a fix attempt; the last healthy production deployment stays active.
+```sh
+bun run demo:rehearsal
+```
 
-### D. Failure/duplicate guardrails
+### 4. Run the sample target
 
-Replay the same alert; no duplicate rollback or PR. Make predecessor lookup, sandbox, tests, Slack, or Vercel verification fail in separate tests; the incident records the reason and escalates rather than claiming success.
+In another terminal:
 
-## Configuration checklist (implementation will add runnable commands)
+```sh
+bun run --cwd apps/sample dev
+```
 
-This README is the assignment, **not** a claim that scripts or `.env` files already exist. When implementation lands, add an `.env.example`, documented package scripts, and precise run/deploy commands. Keep real `.env` files, provider configuration, logs containing secrets, and credentials out of Git.
+The sample app runs on `http://localhost:3000`. Its probe endpoints are
+`/api/health`, `/api/tasks`, and `/api/tasks/summary`. `DEMO_FAULT_MODE` can be
+set in the sample app's environment to `healthy` (default), `runtime`, or
+`persistent`; restart the app after changing it. These deterministic fault
+modes are for the isolated sample target only.
 
-- [ ] Vercel project created and linked to `apps/sample`; known-good deployment URL and immutable predecessor accessible.
-- [ ] Project-scoped Vercel token available **only to the local controller**; confirm permission to inspect deployments and roll back the demo project.
-- [ ] E2B API key available to the local controller; sandbox creation and cleanup verified.
-- [ ] Dedicated, spend-limited model-provider key configured for Supercharge **inside each ephemeral sandbox**; no personal CLI config copied.
-- [ ] GitHub MCP read-only access in sandbox; public-repo clone/search verified.
-- [ ] GitHub write credential for this one repository available **only to the controller** to push branch/open draft PR.
-- [ ] Slack incoming webhook available to notifier; test message sent. If unavailable, display the report locally and mark Slack integration incomplete.
-- [ ] Database/incident state survives a controller restart; project allowlist and localhost binding verified.
+For full Vercel configuration and safe fault-rehearsal steps, see
+[`apps/sample/README.md`](./apps/sample/README.md).
 
-## Git and collaboration rules
+## Tests, type checks, and builds
 
-- `main` is the integration branch. Each member uses a named branch (`anish/remediator`, `ronit/controller`, `madvit/dashboard-pitch`) and opens small PRs; one person reviews another's change. Avoid direct force pushes to `main`.
-- Commit small, runnable slices hourly. Do not edit another person's owned directory without asking; integrate through the shared contract.
-- At the end of hours **1, 5, and 7**, perform a quick integration check together. Report blockers immediately rather than waiting for the next checkpoint.
-- Do not post tokens, model keys, webhook URLs, raw sensitive logs, or sandbox config in commits, PRs, Slack summaries, or PPT screenshots.
+Run a package's tests from the repository root:
 
-## Demo pitch (3 minutes)
+```sh
+bun run --cwd apps/controller test
+bun run --cwd apps/dashboard test
+bun run --cwd apps/sample test
+bun run --cwd packages/notifier test
+bun run --cwd packages/remediator test
+```
 
-1. **Problem (20 s):** Detection and recovery are slow when engineers must correlate logs, deployments, and commits by hand.
-2. **Architecture (35 s):** Probe/deployment lookup → evidence-based decision → Vercel rollback or E2B/Supercharge fix PR → human-visible dashboard/Slack.
-3. **Fresh regression (60 s):** Break the live route, show three failures and healthy predecessor, one rollback, recovered route, developer report.
-4. **Persistent bug (50 s):** Show no rollback; reproduce, patch, test, and open draft PR from the sandbox.
-5. **Safety and next steps (15 s):** All actions are project-scoped; no automatic merge; future work is Sentry/Datadog ingestion, hosted control plane, and broader policy controls.
+Type-check packages that define a typecheck script:
 
-## Reference documentation
+```sh
+bun run --cwd apps/controller typecheck
+bun run --cwd apps/dashboard typecheck
+bun run --cwd apps/sample typecheck
+bun run --cwd packages/notifier typecheck
+bun run --cwd packages/remediator typecheck
+```
 
-- [Supercharge CLI docs](https://www.superchargeai.in/docs) — installation, provider setup, one-shot `-p`, bounded `--max-turns`, permissions, and MCP configuration. Check the installed CLI's `--version`/`--help` before scripting; published docs may lag the installed build.
-- [E2B documentation](https://e2b.dev/docs) — sandbox lifecycle and command execution.
-- [Vercel deployment rollback](https://vercel.com/docs/deployments/rollback-production-deployment) — rollback behavior and post-rollback release implications.
-- [GitHub MCP Server](https://github.com/github/github-mcp-server) — repository and PR search tools.
+The sample app also provides `lint` and `build` scripts:
+
+```sh
+bun run --cwd apps/sample lint
+bun run --cwd apps/sample build
+```
+
+Remediator E2B smoke/rehearsal commands and their credential requirements are
+documented in [`packages/remediator/README.md`](./packages/remediator/README.md).
+
+## Controller API overview
+
+The dashboard uses these controller endpoints:
+
+- `GET /api/incidents` and `GET /api/incidents/:id` — incident list and detail
+- `GET /api/agent/runs` and `GET /api/agent/runs/:id` — local agent-run history
+- `GET /api/agent/runs/:id/events` — server-sent event stream of safe progress
+- `GET /api/auth/session`, `POST /api/auth/login`, and
+  `POST /api/auth/logout` — dashboard session
+- `GET /api/settings` and `POST /api/settings` — controller configuration
+
+Starting an agent run is a controller-side operation, not a dashboard action.
+`POST /api/internal/agent-runs` requires the local `NEXATHON_RUN_TOKEN` bearer
+token and rejects requests carrying an `Origin` header. The CLI entry point is
+`bun run --cwd apps/controller start:run`; see the controller README for
+rehearsal and real-run requirements.
+
+## Deployment and operations
+
+`Dockerfile` builds the controller image. `docker-compose.yml` publishes port
+8787 and expects `apps/controller/.env`; it also sets the controller bind
+address to `0.0.0.0` inside the container. Treat the host-published port as
+trusted-network access and configure dashboard authentication and secrets
+before starting it. PostgreSQL is external; Compose does not start a database.
+
+Settings entered in the dashboard are stored by the controller and require a
+controller restart to take effect. Secret settings are not returned to the
+dashboard. Keep `.env` files, provider tokens, model keys, GitHub credentials,
+and notification webhooks out of version control.
+
+For component-specific details, see:
+
+- [`apps/controller/README.md`](./apps/controller/README.md)
+- [`apps/dashboard/README.md`](./apps/dashboard/README.md)
+- [`apps/sample/README.md`](./apps/sample/README.md)
+- [`packages/contracts/README.md`](./packages/contracts/README.md)
+- [`packages/notifier/README.md`](./packages/notifier/README.md)
+- [`packages/remediator/README.md`](./packages/remediator/README.md)
+- [`docs/demo.md`](./docs/demo.md)
