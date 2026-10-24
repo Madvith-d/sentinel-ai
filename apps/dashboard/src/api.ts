@@ -3,7 +3,7 @@ import { parseIncident, parseIncidentList } from './incident';
 export class ApiError extends Error {}
 
 export async function readJson(path: string, signal: AbortSignal, fetcher = globalThis.fetch): Promise<unknown> {
-  if (!/^\/api\/(?:incidents(?:\/[^/?]+)?|agent\/runs)$/.test(path)) throw new ApiError('Only read-only incident endpoints are allowed.');
+  if (!/^\/api\/(?:incidents(?:\/[^/?]+)?|agent\/runs(?:\/[^/?]+)?)$/.test(path)) throw new ApiError('Only read-only incident endpoints are allowed.');
   const timeout = AbortSignal.timeout(8000);
   const combined = AbortSignal.any([signal, timeout]);
   try {
