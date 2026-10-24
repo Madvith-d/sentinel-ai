@@ -106,7 +106,7 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
     let diagnosticsNoted = false;
     await emit('agent', 'stage', 'Supercharge is diagnosing and editing in E2B');
     const agent = await command(sandbox,
-      'export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"; supercharge --cwd /home/user/nexathon --prompt-file /home/user/incident-prompt.txt --always-approve --no-subagents --disable-web-search --max-turns 40 --output-format streaming-json',
+      'export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"; supercharge --cwd /home/user/nexathon --prompt-file /home/user/incident-prompt.txt --always-approve --no-subagents --disable-web-search --output-format streaming-json',
       270_000, REPO_DIR, envs, {
         onStdout: (data) => parser.push(data),
         onStderr: () => { if (!diagnosticsNoted) { diagnosticsNoted = true; void emit('agent', 'status', 'Agent emitted diagnostics; raw stderr is hidden'); } },
