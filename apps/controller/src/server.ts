@@ -88,7 +88,12 @@ function readMonitorConfig(): MonitorConfig {
   if (platform === 'vercel') {
     const token = process.env.VERCEL_ACCESS_TOKEN;
     if (!token) throw new Error('Vercel monitoring requires VERCEL_ACCESS_TOKEN.');
-    provider = new VercelProvider({ accessToken: token, projectId, productionDomain: productionUrl, teamId: process.env.VERCEL_TEAM_ID });
+    provider = new VercelProvider({
+      accessToken: token, projectId, productionDomain: productionUrl,
+      teamId: process.env.VERCEL_TEAM_ID,
+      // Overlap consecutive pulls so delayed ingestion can be picked up next time.
+      runtimeLogWindowMs: logsIntervalMs + 30_000,
+    });
   } else if (platform === 'railway') {
     const token = process.env.RAILWAY_TOKEN; const railwayProjectId = process.env.RAILWAY_PROJECT_ID;
     if (!token || !railwayProjectId) throw new Error('Railway monitoring requires RAILWAY_TOKEN and RAILWAY_PROJECT_ID.');
@@ -346,7 +351,7 @@ function launchMonitor(config: MonitorConfig): void {
     };
 
     const runPullCycle = async (): Promise<void> => {
-      if (logsPulling) return;
+      if (logsPulling || rateLimited()) return;
       logsPulling = true;
       try {
         const since = Date.now() - 2 * config.logsIntervalMs;

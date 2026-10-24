@@ -28,7 +28,8 @@ function mockProvider(options: { rateLimited?: boolean } = {}) {
   const fetchMock = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
     calls.push({ url, init });
-    if (url.hostname !== 'api.vercel.com') return new Response(null, { status: 200 });
+    if (!['api.vercel.com', 'vercel.com'].includes(url.hostname)) return new Response(null, { status: 200 });
+    if (url.pathname === '/v9/projects/prj_demo') return Response.json({ id: projectId, accountId: 'team_demo' });
 
     if (url.pathname === '/v4/aliases') {
       if (url.searchParams.has('domain')) return Response.json({ aliases: [] });
@@ -41,7 +42,7 @@ function mockProvider(options: { rateLimited?: boolean } = {}) {
     if (url.pathname === '/v13/deployments/dpl_previous') return Response.json(previousDeployment);
     if (url.pathname === '/v6/deployments') return Response.json({ deployments: [currentDeployment, previousDeployment] });
     if (url.pathname === '/v7/deployments') return Response.json({ deployments: [currentDeployment, previousDeployment] }, { headers: rateHeaders });
-    if (url.pathname === '/v1/projects/prj_demo/request-logs') {
+    if (url.hostname === 'vercel.com' && url.pathname === '/api/logs/request-logs') {
       return Response.json({
         rows: [
           {
@@ -203,7 +204,82 @@ describe('VercelProvider', () => {
     ]);
     expect(logs[1]?.isError).toBe(true);
     expect(logs[2]?.statusCode).toBe(500);
-    expect(calls.some(call => call.url.pathname === '/v1/projects/prj_demo/request-logs')).toBe(true);
+    expect(calls.some(call => call.url.hostname === 'vercel.com' && call.url.pathname === '/api/logs/request-logs')).toBe(true);
+  });
+
+  it('uses the CLI host, project owner and a fixed one-minute window', async () => {
+    const { provider, calls } = mockProvider();
+    const before = Date.now();
+    await provider.getRuntimeLogs(projectId, 'dpl_current');
+    await provider.getRuntimeLogs(projectId, 'dpl_current');
+    const requests = calls.filter(call => call.url.pathname === '/api/logs/request-logs');
+    expect(requests).toHaveLength(2);
+    const { url, init } = requests[0]!;
+    expect(url.origin).toBe('https://vercel.com');
+    expect(url.searchParams.get('ownerId')).toBe('team_demo');
+    expect(url.searchParams.get('projectId')).toBe(projectId);
+    expect(url.searchParams.get('deploymentId')).toBe('dpl_current');
+    expect(url.searchParams.get('environment')).toBe('production');
+    expect(url.searchParams.get('page')).toBe('0');
+    const end = Number(url.searchParams.get('endDate'));
+    expect(end).toBeGreaterThanOrEqual(before);
+    expect(end - Number(url.searchParams.get('startDate'))).toBe(60_000);
+    expect(new Headers(init.headers).get('Authorization')).toBe(`Bearer ${token}`);
+    expect(calls.filter(call => call.url.pathname === '/v9/projects/prj_demo')).toHaveLength(1);
+  });
+
+  it('paginates stored logs with stable timestamps and team scope, returning chronological events', async () => {
+    const calls: URL[] = [];
+    const fetchMock = (async (input: RequestInfo | URL) => {
+      const url = new URL(input.toString());
+      calls.push(url);
+      if (url.pathname === '/v9/projects/prj_demo') return Response.json({ accountId: 'team_owner' });
+      const page = Number(url.searchParams.get('page'));
+      return Response.json({ rows: [{
+        requestId: `req-${page}`, timestamp: page === 0 ? '2026-10-24T01:53:30Z' : '2026-10-24T01:53:00Z',
+        statusCode: 500, logs: [{ level: 'error', message: `failure-${page}` }],
+      }], hasMoreRows: page === 0 });
+    }) as typeof fetch;
+    const provider = new VercelProvider({ accessToken: token, projectId, productionDomain: 'demo.example.com', teamId: 'team_owner', runtimeLogWindowMs: 90_000, fetch: fetchMock });
+    const logs = await provider.getRuntimeLogs(projectId, 'dpl_current');
+    expect(logs.map(log => log.message)).toEqual(['failure-1', 'failure-0']);
+    expect(logs[0]?.timestamp).toBe(Date.parse('2026-10-24T01:53:00Z'));
+    expect(calls).toHaveLength(3);
+    expect(calls.every(url => url.searchParams.get('teamId') === 'team_owner')).toBe(true);
+    expect(calls[1]!.searchParams.get('startDate')).toBe(calls[2]!.searchParams.get('startDate'));
+    expect(calls[1]!.searchParams.get('endDate')).toBe(calls[2]!.searchParams.get('endDate'));
+    expect(Number(calls[1]!.searchParams.get('endDate')) - Number(calls[1]!.searchParams.get('startDate'))).toBe(90_000);
+    expect(calls[2]!.searchParams.get('page')).toBe('1');
+  });
+
+  it('preserves redacted HTTP validation details without retrying a bad request', async () => {
+    let attempts = 0;
+    const fetchMock = (async (_input: RequestInfo | URL) => {
+      attempts++;
+      return Response.json({ error: { code: 'bad_request', message: `ownerId is required; token=${token}; credential ${token}` } }, { status: 400 });
+    }) as typeof fetch;
+    const provider = new VercelProvider({ accessToken: token, projectId, productionDomain: 'demo.example.com', fetch: fetchMock });
+    let message = '';
+    try { await provider.getRuntimeLogs(projectId, 'dpl_current'); }
+    catch (error) { message = (error as Error).message; }
+    expect(message).toContain('HTTP 400 (api.vercel.com/v9/projects/prj_demo)');
+    expect(message).toContain('bad_request: ownerId is required');
+    expect(message).not.toContain(token);
+    expect(attempts).toBe(1);
+  });
+
+  it('reports invalid payloads and pagination overflow instead of claiming there are no errors', async () => {
+    for (const overflow of [false, true]) {
+      let pages = 0;
+      const fetchMock = (async (input: RequestInfo | URL) => {
+        if (new URL(input.toString()).pathname.startsWith('/v9/projects/')) return Response.json({ accountId: 'team_demo' });
+        pages++;
+        return Response.json(overflow ? { rows: [{ requestId: `req-${pages}` }], hasMoreRows: true } : {});
+      }) as typeof fetch;
+      const provider = new VercelProvider({ accessToken: token, projectId, productionDomain: 'demo.example.com', fetch: fetchMock });
+      await expect(provider.getRuntimeLogs(projectId, 'dpl_current')).rejects.toThrow(overflow ? 'pagination limit' : 'missing rows');
+      expect(pages).toBe(overflow ? 10 : 1);
+    }
   });
 
   it('reads bounded deployment events and marks failures without leaking secrets', async () => {

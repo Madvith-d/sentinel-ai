@@ -12,6 +12,8 @@ export interface VercelProviderOptions {
   teamId?: string;
   fetch?: typeof globalThis.fetch;
   timeoutMs?: number;
+  /** Recent history to fetch; defaults to one minute. */
+  runtimeLogWindowMs?: number;
 }
 
 function object(value: unknown): JsonObject | undefined {
@@ -87,6 +89,7 @@ export class VercelProvider implements DeploymentProvider {
   private readonly timeoutMs: number;
   private readonly productionDomain: string;
   private rateLimit: RateLimitInfo | null = null;
+  private logOwnerId?: string;
 
   constructor(private readonly options: VercelProviderOptions) {
     if (!options.accessToken.trim()) throw new Error('Vercel access token is required.');
@@ -124,7 +127,17 @@ export class VercelProvider implements DeploymentProvider {
         },
       });
       this.trackRateLimit(response);
-      if (!response.ok) throw new Error(`Vercel API request failed with HTTP ${response.status}.`);
+      if (!response.ok) {
+        // Preserve validation/permission diagnostics, but never echo credentials.
+        let detail = '';
+        try {
+          const body = object(await response.json());
+          const error = object(body?.error);
+          detail = [text(error?.code), text(error?.message) ?? text(body?.message)].filter(Boolean).join(': ');
+        } catch { /* non-JSON error bodies are not useful diagnostics */ }
+        detail = redact(detail.replaceAll(this.options.accessToken, '[REDACTED]'), 350);
+        throw new Error(`Vercel API request failed with HTTP ${response.status} (${url.hostname}${url.pathname})${detail ? `: ${detail}` : '.'}`);
+      }
       return response;
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('Vercel API request failed')) throw error;
@@ -243,18 +256,38 @@ export class VercelProvider implements DeploymentProvider {
     this.assertProject(projectId);
     if (!deploymentId.trim()) throw new Error('Vercel deployment ID is required.');
     const now = Date.now();
-    // Stored request logs, the same query the Vercel dashboard and `vercel logs` use.
-    // The deployment runtime-logs route is a live stream and does not return the lines already stored.
-    const url = this.apiUrl(`/v1/projects/${encodeURIComponent(this.options.projectId)}/request-logs`, {
-      deploymentId,
-      environment: 'production',
-      startDate: String(now - 60 * 60 * 1000),
-      endDate: String(now),
-      page: '0',
-    });
-    const response = await this.request(url);
-    const body = object(await response.json());
-    const rows = Array.isArray(body?.rows) ? body.rows : Array.isArray(body?.logs) ? body.logs : [];
+    if (!this.logOwnerId) {
+      // The CLI uses the project's accountId, including for Hobby workspaces.
+      const response = await this.request(this.apiUrl(`/v9/projects/${encodeURIComponent(projectId)}`));
+      const project = object(await response.json());
+      this.logOwnerId = text(project?.accountId);
+      if (!this.logOwnerId) throw new Error('Vercel project metadata did not include an accountId for runtime logs.');
+    }
+    const windowMs = this.options.runtimeLogWindowMs ?? 60_000;
+    if (!Number.isFinite(windowMs) || windowMs < 1 || windowMs > 30 * 60_000) {
+      throw new Error('Vercel runtime log window must be between 1 ms and 30 minutes.');
+    }
+    // Match Vercel CLI's logs-v2 transport. This is an internal dashboard API,
+    // not the documented live deployment runtime-logs stream.
+    // https://github.com/vercel/vercel/blob/main/packages/cli/src/util/logs-v2.ts
+    const rows: unknown[] = [];
+    for (let page = 0; page < 10; page++) {
+      const url = new URL('/api/logs/request-logs', 'https://vercel.com');
+      const query = {
+        projectId, ownerId: this.logOwnerId, deploymentId, environment: 'production',
+        startDate: String(now - windowMs), endDate: String(now), page: String(page),
+        ...(this.options.teamId ? { teamId: this.options.teamId } : {}),
+      };
+      for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
+      const response = await this.request(url);
+      const body = object(await response.json());
+      if (!Array.isArray(body?.rows)) throw new Error('Vercel runtime logs returned an unexpected response (missing rows).');
+      rows.push(...body.rows);
+      if (body.hasMoreRows !== true) break;
+      if (page === 9 || body.rows.length === 0) {
+        throw new Error('Vercel runtime logs exceeded the pagination limit; shorten the log window.');
+      }
+    }
     const logs: RuntimeLog[] = [];
     for (const row of rows) {
       const item = object(row);
@@ -287,7 +320,7 @@ export class VercelProvider implements DeploymentProvider {
         });
       });
     }
-    return logs.slice(-100);
+    return logs.sort((a, b) => a.timestamp - b.timestamp);
   }
 
   async getDeploymentLogs(projectId: string, deploymentId: string): Promise<string[]> {

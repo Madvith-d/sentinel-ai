@@ -20,6 +20,23 @@ The API binds only to `127.0.0.1` (default port `8787`). Set `CONTROLLER_PORT` t
 - `POST /api/internal/agent-runs` starts a run; it needs the `NEXATHON_RUN_TOKEN` bearer token and is refused for any request carrying an `Origin` header.
 - Other methods are rejected; no endpoint can roll back production or merge code.
 
+## Vercel runtime logs
+
+Runtime log pulls use the same stored-log transport as Vercel CLI:
+`https://vercel.com/api/logs/request-logs`. The controller resolves and caches
+`ownerId` from the project's `accountId`; omitting it produces HTTP 400 with
+“missing required property `ownerId`”. This is an internal dashboard endpoint,
+so its request format can change independently of the documented REST API.
+The deployment `runtime-logs` REST endpoint is a live stream rather than this
+historical query.
+
+The provider defaults to a one-minute window. Scheduled monitoring pulls every
+`CONTROLLER_LOGS_INTERVAL_MS` (60 seconds by default) with 30 seconds of overlap
+to allow for ingestion delays; stored event IDs deduplicate overlapping logs.
+Queries stay within Hobby's one-hour retention and follow up to ten pages.
+Errors include the endpoint and redacted Vercel validation details. Restart the
+controller after updating the code to use the corrected request format.
+
 ## Watching an agent work
 
 The dashboard's **Live agent activity** panel reads the event stream. Runs are never started from the browser, so the token stays in your shell:
