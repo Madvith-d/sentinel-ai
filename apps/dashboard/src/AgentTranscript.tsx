@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ActivityEvent, ActivityRun } from './activity';
+import { MarkdownMessage } from './MarkdownMessage';
 
 const labels: Record<ActivityEvent['kind'], string> = {
   stage: 'Stage', tool: 'Tool', tool_input: 'Tool input', tool_output: 'Tool result',
@@ -57,7 +58,7 @@ export function AgentTranscript({ events, run }: { events: ActivityEvent[]; run:
         return <li key={event.seq} className={`transcript-entry kind-${event.kind}`}>
           <div className="transcript-meta"><span>{labels[event.kind]} <span className="transcript-phase">/ {event.phase}</span></span><time dateTime={event.at}>{time}</time></div>
           {isDetail ? <details className="transcript-detail"><summary>{heading}</summary><pre>{rest.length ? rest.join('\n') : event.message}</pre></details>
-            : event.kind === 'message' || event.kind === 'summary' ? <p className="transcript-prose">{event.message}</p>
+            : event.kind === 'message' || event.kind === 'summary' ? <MarkdownMessage>{event.message}</MarkdownMessage>
             : <p className="transcript-line">{event.message}</p>}
         </li>;
       })}
