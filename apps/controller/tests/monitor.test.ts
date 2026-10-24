@@ -65,6 +65,18 @@ function monitorOptions(deploymentProvider: DeploymentProvider) {
 }
 
 describe('checkProject', () => {
+  it('opens one incident after the same server log fails three pulls', async () => {
+    const fake = provider();
+    const options = monitorOptions(fake.implementation);
+    const signal = { logSignal: { evidence: 'Server log repeated: task service failed' } };
+    expect((await checkProject({ ...options, ...signal })).action).toBe('monitor');
+    expect((await checkProject({ ...options, ...signal })).action).toBe('monitor');
+    const result = await checkProject({ ...options, ...signal });
+    expect(result.action).toBe('incident');
+    if (result.action === 'incident') expect(result.incident.evidence.some(line => line.includes('task service failed'))).toBe(true);
+    expect(fake.calls.rollback).toBeLessThanOrEqual(1);
+  });
+
   it('records a failed build for remediation without rolling back healthy production', async () => {
     const fake = provider();
     const buildProvider: DeploymentProvider = {

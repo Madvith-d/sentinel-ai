@@ -64,6 +64,8 @@ export interface DeploymentProvider {
   listDeploymentsSince?(projectId: string, sinceMs: number): Promise<DeploymentSummary[]>;
   /** Build/deployment event log of one deployment, pulled once per deployment. */
   getDeploymentEvents?(projectId: string, deploymentId: string): Promise<RuntimeLog[]>;
+  /** Request logs for the deployment that is currently serving production. */
+  getRuntimeLogs?(projectId: string, deploymentId: string): Promise<RuntimeLog[]>;
   /** Rate-limit telemetry parsed from the provider's most recent API response. */
   getRateLimit?(): RateLimitInfo | null;
   /** Provider-owned host allowlist for deployment URLs returned by its API. */
@@ -94,6 +96,8 @@ export interface MonitorOptions {
   now?: () => Date;
   wait?: (milliseconds: number) => Promise<void>;
   actions?: MonitorActions;
+  /** A repeated server log, counted apart from the HTTP probe. */
+  logSignal?: { evidence: string };
 }
 
 export type MonitorResult =
@@ -275,6 +279,14 @@ function makeIncident(
   return incident;
 }
 
+/** Stable identity for one server failure, so three pulls of the same crash count together. */
+export function serverErrorSignature(log: RuntimeLog): string | null {
+  const serverError = (log.statusCode !== undefined && log.statusCode >= 500) || log.level === 'error';
+  if (!serverError) return null;
+  const message = log.message.toLowerCase().replace(/[0-9a-f]{6,}/g, '#').replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().slice(0, 180);
+  return message || null;
+}
+
 export async function checkProject(options: MonitorOptions): Promise<MonitorResult> {
   const now = options.now ?? (() => new Date());
   const probePath = options.probePath;
@@ -313,19 +325,26 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
   let currentProbe: ProbeResult = 'unknown';
   let currentResponse: ProbeResponse = { result: 'unknown', evidence: 'Probe did not return a result.' };
   let currentEvidence = currentResponse.evidence;
-  try {
-    // Judge health on the public production hostname. Immutable *.vercel.app
-    // URLs can return 401 from Deployment Protection while the public alias is healthy.
-    const result = await options.provider.probeProduction(options.projectId, probePath);
-    currentResponse = result;
-    currentProbe = result.result;
-    currentEvidence = evidence(result.evidence);
-  } catch {
-    currentEvidence = 'Probe request failed before a response was received.';
+  if (options.logSignal) {
+    currentProbe = 'fail';
+    currentResponse = { result: 'fail', evidence: options.logSignal.evidence };
+    currentEvidence = evidence(options.logSignal.evidence);
+  } else {
+    try {
+      // Judge health on the public production hostname. Immutable *.vercel.app
+      // URLs can return 401 from Deployment Protection while the public alias is healthy.
+      const result = await options.provider.probeProduction(options.projectId, probePath);
+      currentResponse = result;
+      currentProbe = result.result;
+      currentEvidence = evidence(result.evidence);
+    } catch {
+      currentEvidence = 'Probe request failed before a response was received.';
+    }
   }
 
   const observedAt = now().toISOString();
-  const streak = await options.store.recordProbe(options.projectId, current.id, probePath, currentProbe, observedAt);
+  const streakKey = options.logSignal ? 'runtime-log' : probePath;
+  const streak = await options.store.recordProbe(options.projectId, current.id, streakKey, currentProbe, observedAt);
   if (currentProbe !== 'fail') {
     return {
       action: 'monitor',
@@ -338,7 +357,9 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
     return {
       action: 'monitor',
       consecutiveFailures: streak.consecutiveFailures,
-      reason: 'Waiting for three consecutive failures of the same probe.',
+      reason: options.logSignal
+        ? 'Waiting for the same server error on three log pulls.'
+        : 'Waiting for three consecutive failures of the same probe.',
       probe: currentResponse,
     };
   }

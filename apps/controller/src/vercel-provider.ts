@@ -239,6 +239,32 @@ export class VercelProvider implements DeploymentProvider {
     }).slice(-50);
   }
 
+  async getRuntimeLogs(projectId: string, deploymentId: string): Promise<RuntimeLog[]> {
+    this.assertProject(projectId);
+    if (!deploymentId.trim()) throw new Error('Vercel deployment ID is required.');
+    const url = this.apiUrl(`/v1/projects/${encodeURIComponent(this.options.projectId)}/deployments/${encodeURIComponent(deploymentId)}/runtime-logs`);
+    const response = await this.request(url);
+    return parseLogStream(await response.text()).flatMap((value, index) => {
+      const item = object(value);
+      const message = text(item?.message) ?? text(item?.text);
+      if (!message) return [];
+      const statusCode = typeof item?.responseStatusCode === 'number' ? item.responseStatusCode : undefined;
+      const rawLevel = text(item?.level) ?? (statusCode !== undefined && statusCode >= 500 ? 'error' : 'info');
+      const level = rawLevel === 'error' || rawLevel === 'fatal' ? 'error' : rawLevel === 'warning' || rawLevel === 'warn' ? 'warn' : 'info';
+      const timestamp = typeof item?.timestampInMs === 'number' ? item.timestampInMs
+        : typeof item?.timestamp === 'number' ? item.timestamp
+        : Date.now();
+      return [{
+        id: text(item?.rowId) ?? text(item?.id) ?? `${deploymentId}-runtime-${index}`,
+        level,
+        message: redact(message, 600),
+        ...(statusCode !== undefined ? { statusCode } : {}),
+        timestamp,
+        isError: level === 'error' || (statusCode !== undefined && statusCode >= 500),
+      }];
+    }).slice(-100);
+  }
+
   async getDeploymentLogs(projectId: string, deploymentId: string): Promise<string[]> {
     this.assertProject(projectId);
     if (!deploymentId.trim()) throw new Error('Vercel deployment ID is required.');
