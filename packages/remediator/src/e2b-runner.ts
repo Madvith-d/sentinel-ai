@@ -1,4 +1,5 @@
 import { CommandExitError, Sandbox, type CommandResult } from 'e2b';
+import { verifyIncidentRegression } from './incident-regression.js';
 import { createAgentActivityParser, type RemediationActivity } from './activity.js';
 import { remediationPrompt, superchargeConfig } from './prompt.js';
 import type { ProviderConfig, RemediationFailure, RemediationRequest, RemediationResult } from './types.js';
@@ -91,15 +92,22 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
     }
     await emit('reproduction', 'stage', 'Checking that the incident reproduces before a patch');
     const baseline = await command(sandbox, `export PATH="$HOME/.bun/bin:$PATH"; ${request.reproduceCommand}`, 120_000, REPO_DIR);
-    if (baseline.exitCode === 0) return failure(request, 'not_reproducible', 'Reproduction already passes at the incident SHA; no patch or PR created');
-    await emit('reproduction', 'status', 'Baseline failed as expected; agent may now attempt a fix');
+    const baselinePassed = baseline.exitCode === 0;
+    const regressionTestPath = `${allowedPathPrefix()}tests/incident-${request.incidentId}.test.ts`;
+    if (baselinePassed) {
+      const exists = await command(sandbox, `test -e ${shellQuote(`${REPO_DIR}/${regressionTestPath}`)}`, 10_000);
+      if (exists.exitCode === 0) return failure(request, 'not_reproducible', 'Incident regression test path already exists; refusing to overwrite a committed test');
+    }
+    await emit('reproduction', 'status', baselinePassed
+      ? 'Configured test passes; agent will inspect the code and logs and add an incident-specific reproduction'
+      : 'Baseline failed as expected; agent will inspect the code and logs before fixing');
 
     await checked(sandbox,
       `if "$HOME/.local/bin/supercharge" --version 2>/dev/null | grep -q '^supercharge ${SC_VERSION} '; then "$HOME/.local/bin/supercharge" --version; else curl -fsSL https://www.superchargeai.in/install.sh -o /tmp/supercharge-install.sh && SUPERCHARGE_VERSION=${SC_VERSION} SUPERCHARGE_GITHUB_REPO=iotserver24/supercharge-releases SUPERCHARGE_NO_MODIFY_PATH=1 bash /tmp/supercharge-install.sh && "$HOME/.local/bin/supercharge" --version; fi`,
       90_000);
     await sandbox.files.write('/home/user/.supercharge/config.toml', superchargeConfig(provider));
     await checked(sandbox, 'chmod 700 /home/user/.supercharge && chmod 600 /home/user/.supercharge/config.toml', 10_000);
-    await sandbox.files.write('/home/user/incident-prompt.txt', remediationPrompt(request));
+    await sandbox.files.write('/home/user/incident-prompt.txt', remediationPrompt(request, { baselinePassed, regressionTestPath }));
     const envs = { GITHUB_READ_TOKEN: provider.githubReadToken };
     const parser = createAgentActivityParser((kind, message) => { void emit('agent', kind, message); },
       (text) => redacted(text, provider));
@@ -125,6 +133,27 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
       validateChangedFiles(changedFiles);
     } catch (error) {
       return failure(request, changedFiles.length ? 'unsafe_patch' : 'no_patch', (error as Error).message);
+    }
+
+    let incidentBaseline: { stdout: string; stderr: string } | undefined;
+    if (baselinePassed) {
+      if (!changedFiles.includes(regressionTestPath)) {
+        return failure(request, 'not_reproducible', 'Agent investigated the repository but did not produce an incident-specific regression test');
+      }
+      await emit('reproduction', 'stage', 'Verifying the new incident test against the original and patched source');
+      const activeSandbox = sandbox;
+      const regression = await verifyIncidentRegression({
+        repositoryDirectory: REPO_DIR, pathPrefix: allowedPathPrefix(),
+        testPath: regressionTestPath, maxPatchBytes: MAX_PATCH_BYTES,
+        run: (cmd, timeoutMs) => command(activeSandbox, cmd, timeoutMs, REPO_DIR),
+        files: {
+          read: path => activeSandbox.files.read(path),
+          write: (path, content) => activeSandbox.files.write(path, content),
+        },
+      });
+      if (!regression.ok) return failure(request, regression.reason, regression.message,
+        regression.output ? redacted(regression.output, provider) : undefined);
+      incidentBaseline = regression.baseline;
     }
 
     await emit('verification', 'stage', 'Re-running the reproduction, project tests, and build');
@@ -154,7 +183,7 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
       baseSha: head,
       patch: diff.stdout,
       changedFiles,
-      baseline: redacted(baseline.stderr || baseline.stdout, provider),
+      baseline: redacted(incidentBaseline ? incidentBaseline.stderr || incidentBaseline.stdout : baseline.stderr || baseline.stdout, provider),
       agentSummary: `Supercharge completed ${parser.toolCalls} tool calls; raw agent stream intentionally omitted`,
       testOutput: redacted(`${repro.stdout}\n${tests.stdout}\n${tests.stderr}`, provider),
       buildOutput: redacted(`${build.stdout}\n${build.stderr}`, provider),
@@ -162,7 +191,7 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
     };
   } catch (error) {
     // Never surface command arguments or config files in error text.
-    await emit('sandbox', 'status', 'Sandbox or verification failed; human review needed');
+    await emit('sandbox', 'status', 'Sandbox or verification failed; recording the fix attempt error');
     return failure(request, 'sandbox_error', 'Sandbox setup, execution, or verification failed', redacted(String(error), provider));
   } finally {
     if (sandbox) await sandbox.kill().catch(() => undefined);

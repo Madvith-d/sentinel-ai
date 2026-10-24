@@ -131,7 +131,7 @@ describe('monitor safety boundaries', () => {
     expect(result.action).toBe('unavailable');
   });
 
-  it('escalates without retry when the rollback request fails', async () => {
+  it('records unavailable remediation after rollback fails without retrying rollback', async () => {
     let rollbacks = 0;
     const { implementation } = provider({
       rollbackProductionTo: async () => {
@@ -144,8 +144,8 @@ describe('monitor safety boundaries', () => {
 
     expect(result.action).toBe('incident');
     if (result.action !== 'incident') throw new Error('Expected an incident.');
-    expect(result.incident.status).toBe('needs_human');
-    expect(result.incident.decision).toBe('escalate');
+    expect(result.incident.status).toBe('remediation_failed');
+    expect(result.incident.decision).toBe('fix_pr');
     expect(result.incident.evidence.join(' ')).toContain('Rollback request failed');
     expect(rollbacks).toBe(1);
 
@@ -155,7 +155,7 @@ describe('monitor safety boundaries', () => {
     expect(rollbacks).toBe(1);
   });
 
-  it('escalates when remediation returns a failure', async () => {
+  it('records the actual remediation failure for automatic retry', async () => {
     const { implementation } = provider({ probeImmutableDeployment: async () => probe('fail') });
     const options = makeOptions(implementation, {
       actions: { remediate: async () => ({ ok: false, message: 'Sandbox timed out.', evidence: ['proof'] }) },
@@ -165,12 +165,12 @@ describe('monitor safety boundaries', () => {
     expect(result.action).toBe('incident');
     if (result.action !== 'incident') throw new Error('Expected an incident.');
     expect(result.incident.kind).toBe('persistent_defect');
-    expect(result.incident.status).toBe('needs_human');
-    expect(result.incident.decision).toBe('escalate');
+    expect(result.incident.status).toBe('remediation_failed');
+    expect(result.incident.decision).toBe('fix_pr');
     expect(result.incident.evidence.join(' ')).toContain('Sandbox timed out.');
   });
 
-  it('escalates when remediation throws unexpectedly', async () => {
+  it('records an unexpected remediation failure', async () => {
     const { implementation } = provider({ probeImmutableDeployment: async () => probe('fail') });
     const options = makeOptions(implementation, {
       actions: { remediate: async () => { throw new Error('E2B down'); } },
@@ -179,9 +179,67 @@ describe('monitor safety boundaries', () => {
 
     expect(result.action).toBe('incident');
     if (result.action !== 'incident') throw new Error('Expected an incident.');
-    expect(result.incident.status).toBe('needs_human');
-    expect(result.incident.decision).toBe('escalate');
+    expect(result.incident.status).toBe('remediation_failed');
+    expect(result.incident.decision).toBe('fix_pr');
     expect(result.incident.evidence.join(' ')).toContain('Remediation failed unexpectedly');
+  });
+
+  it('automatically prepares a fix when rollback cannot be justified', async () => {
+    for (const scenario of ['missing-predecessor', 'old-deployment', 'rollback-disabled', 'unknown-predecessor']) {
+      let fixes = 0;
+      const { implementation, calls } = provider({
+        ...(scenario === 'missing-predecessor' ? { getPreviousDeployment: async () => null } : {}),
+        ...(scenario === 'old-deployment' ? { getProductionDeployment: async () => ({ ...current, createdAt: '2026-10-01T00:00:00Z' }) } : {}),
+        ...(scenario === 'unknown-predecessor' ? { probeImmutableDeployment: async () => probe('unknown') } : {}),
+      });
+      const options = makeOptions(implementation, {
+        ...(scenario === 'rollback-disabled' ? { allowlistedProjectIds: new Set<string>() } : {}),
+        actions: { remediate: async incident => {
+          fixes++;
+          expect(incident.status).toBe('remediating');
+          expect(incident.decision).toBe('fix_pr');
+          return { ok: true, message: 'Verified fix', actionUrl: 'https://github.com/example/app/pull/1' };
+        } },
+      });
+      const result = await driveFailure(options);
+      expect(result.action === 'incident' && result.incident.status).toBe('pr_opened');
+      expect(fixes).toBe(1);
+      expect(calls.rollback).toBe(0);
+    }
+  });
+
+  it('starts repository remediation when rollback fails or was already claimed', async () => {
+    for (const alreadyClaimed of [false, true]) {
+      let fixes = 0;
+      let rollbacks = 0;
+      const { implementation } = provider({ rollbackProductionTo: async () => { rollbacks++; throw new Error('provider failure'); } });
+      const options = makeOptions(implementation, {
+        actions: { remediate: async () => { fixes++; return { ok: true, message: 'Fix prepared' }; } },
+      });
+      if (alreadyClaimed) await options.store.claimRollback(current.id, at.toISOString());
+      const result = await driveFailure(options);
+      expect(result.action === 'incident' && result.incident.status).toBe('pr_opened');
+      expect(fixes).toBe(1);
+      expect(rollbacks).toBe(alreadyClaimed ? 0 : 1);
+    }
+  });
+
+  it('retries a legacy human-escalated incident even if it has a rollback action URL', async () => {
+    let fixes = 0;
+    const { implementation, calls } = provider();
+    const options = makeOptions(implementation, {
+      actions: { remediate: async () => { fixes++; return { ok: true, message: 'Fix prepared' }; } },
+    });
+    await options.store.save({
+      id: incidentId(projectId, current.id, '/api/tasks'), kind: 'runtime_regression',
+      projectId, deploymentId: current.id, commitSha: current.commitSha,
+      status: 'needs_human', decision: 'escalate', detectedAt: at.toISOString(),
+      actionUrl: previous.immutableUrl, evidence: ['Old rollback evidence'], events: [],
+    });
+    const result = await driveFailure(options);
+    expect(result.action === 'incident' && result.incident.status).toBe('pr_opened');
+    expect(fixes).toBe(1);
+    expect(calls.rollback).toBe(0);
   });
 
   it('records a notification failure without losing the incident', async () => {
@@ -216,7 +274,7 @@ describe('monitor safety boundaries', () => {
     expect(notifications).toBeGreaterThan(0);
   });
 
-  it('escalates an interrupted rollback on the next poll', async () => {
+  it('records an interrupted rollback for automatic remediation on the next poll', async () => {
     const store = new IncidentStore(':memory:');
     await store.recordProbe(projectId, current.id, '/api/tasks', 'fail', at.toISOString());
     await store.recordProbe(projectId, current.id, '/api/tasks', 'fail', at.toISOString());
@@ -238,8 +296,8 @@ describe('monitor safety boundaries', () => {
 
     expect(result.action).toBe('incident');
     if (result.action !== 'incident') throw new Error('Expected an incident.');
-    expect(result.incident.status).toBe('needs_human');
-    expect(result.incident.decision).toBe('escalate');
+    expect(result.incident.status).toBe('remediation_failed');
+    expect(result.incident.decision).toBe('fix_pr');
     expect(result.duplicate).toBe(true);
     expect(result.updated).toBe(true);
   });
@@ -253,8 +311,8 @@ describe('monitor safety boundaries', () => {
 
     expect(result.action).toBe('incident');
     if (result.action !== 'incident') throw new Error('Expected an incident.');
-    expect(result.incident.status).toBe('needs_human');
-    expect(result.incident.decision).toBe('escalate');
+    expect(result.incident.status).toBe('remediation_failed');
+    expect(result.incident.decision).toBe('fix_pr');
     expect(result.incident.evidence.join(' ')).toContain('already recorded');
     expect(calls.rollback).toBe(0);
   });

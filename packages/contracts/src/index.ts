@@ -14,6 +14,7 @@ export const incidentStatuses = [
   'recovered',
   'pr_opened',
   'needs_human',
+  'remediation_failed',
 ] as const;
 
 export type IncidentStatus = (typeof incidentStatuses)[number];
@@ -37,6 +38,8 @@ export interface Incident {
   previousDeploymentUrl?: string;
   probePath?: string;
   evidence: string[];
+  /** Full redacted runtime batch captured when this incident was detected. */
+  runtimeLogs?: string[];
   decision?: IncidentDecision;
   actionUrl?: string;
   events: IncidentEvent[];

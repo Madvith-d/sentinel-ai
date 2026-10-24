@@ -9,7 +9,7 @@ import { dispatchRun } from './remediation';
 import { startPollingWorker, type PollingWorker } from './worker';
 import { VercelProvider } from './vercel-provider';
 import { CoolifyProvider, RailwayProvider, RenderProvider } from './platform-providers';
-import { checkProject, serverErrorSignature, type DeploymentProvider, type DeploymentSummary, type RuntimeLog } from './monitor';
+import { checkProject, runtimeLogSignal, type DeploymentProvider, type DeploymentSummary, type RuntimeLog } from './monitor';
 import { createControllerActions, type RemediationConfig } from './actions';
 import { applyStoredSettings, createSettingsApi } from './settings';
 import { disconnectFields, exchangeGithubManifest, githubConnectTarget, githubCredentials, githubStateOk, installationExists, listInstallationRepositories, matchingVercelProject, verifyGithubWebhook } from './github-app';
@@ -308,7 +308,6 @@ function launchMonitor(config: MonitorConfig): void {
       watch.logsCheckedAt = new Date().toISOString();
     };
 
-    let logSignature: string | undefined;
     const logProvider = new Proxy(config.provider, {
       get(target, property, receiver) {
         if (property === 'getLatestDeploymentStatus') return undefined;
@@ -316,19 +315,9 @@ function launchMonitor(config: MonitorConfig): void {
         return typeof value === 'function' ? value.bind(target) : value;
       },
     });
-    const observeRuntime = async (deploymentId: string, fresh: RuntimeLog[]): Promise<void> => {
-      const signature = fresh.map(serverErrorSignature).filter((item): item is string => Boolean(item)).at(-1);
-      if (!signature) {
-        if (logSignature) {
-          logSignature = undefined;
-          await store.recordProbe(config.projectId, deploymentId, 'runtime-log', 'pass', new Date().toISOString());
-        }
-        return;
-      }
-      if (signature !== logSignature) {
-        logSignature = signature;
-        await store.recordProbe(config.projectId, deploymentId, 'runtime-log', 'pass', new Date().toISOString());
-      }
+    const observeRuntime = async (deploymentId: string, logs: RuntimeLog[], fresh: RuntimeLog[]): Promise<void> => {
+      const signal = runtimeLogSignal(logs, fresh, deploymentId);
+      if (!signal) return;
       const result = await checkProject({
         projectId: config.projectId,
         allowlistedProjectIds: config.rollbackEnabled ? new Set([config.projectId]) : new Set(),
@@ -336,7 +325,7 @@ function launchMonitor(config: MonitorConfig): void {
         provider: logProvider,
         store,
         actions,
-        logSignal: { evidence: `Server log repeated: ${signature}` },
+        logSignal: signal,
       });
       if (result.action === 'monitor' && result.consecutiveFailures > watch.failures) {
         watch.failures = result.consecutiveFailures;
@@ -367,7 +356,7 @@ function launchMonitor(config: MonitorConfig): void {
             watch.deployment = { id: current.id, url: current.immutableUrl, createdAt: current.createdAt };
             watch.logsSource = 'runtime-logs';
             watch.logs = logs.slice(-50);
-            await observeRuntime(current.id, fresh);
+            await observeRuntime(current.id, logs, fresh);
           }
         }
         watch.logsCheckedAt = new Date().toISOString();

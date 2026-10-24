@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Incident } from '@nexathon/contracts';
-import { redact, safeLink } from '@nexathon/notifier/format';
+import { redact, redactFull, safeLink } from '@nexathon/notifier/format';
 import { decideIncident, type ProbeResult } from './decision';
 import type { IncidentStore } from './incident-store';
 
@@ -96,8 +96,8 @@ export interface MonitorOptions {
   now?: () => Date;
   wait?: (milliseconds: number) => Promise<void>;
   actions?: MonitorActions;
-  /** A repeated server log, counted apart from the HTTP probe. */
-  logSignal?: { evidence: string };
+  /** Same error repeated within one fetched batch, independent of the HTTP streak. */
+  logSignal?: { evidence: string; occurrences: number; logs: RuntimeLog[]; deploymentId: string };
 }
 
 export type MonitorResult =
@@ -176,15 +176,16 @@ async function finishRemediation(
 ): Promise<void> {
   const remediate = options.actions?.remediate;
   if (!remediate) {
-    incident.status = 'needs_human';
-    incident.decision = 'escalate';
+    incident.status = 'remediation_failed';
+    incident.decision = 'fix_pr';
     incident.evidence.push('No remediation dispatcher is configured; no PR was created.');
-    incident.events.push(event(new Date().toISOString(), 'escalation', 'Remediation is unavailable and requires human review.'));
+    incident.events.push(event(new Date().toISOString(), 'remediation_failed', 'Remediation is not configured. Configure the model, sandbox, and repository connection to enable automatic fixes.'));
     await saveAndNotify(incident, options);
     return;
   }
 
   incident.status = 'remediating';
+  incident.decision = 'fix_pr';
   incident.events.push(event(new Date().toISOString(), 'remediation_started', 'Dispatching bounded fix-PR remediation.'));
   await options.store.save(incident);
   try {
@@ -197,16 +198,16 @@ async function finishRemediation(
       incident.evidence.push(...(result.evidence ?? []).map(evidence));
       incident.events.push(event(new Date().toISOString(), 'draft_pr', result.message));
     } else {
-      incident.status = 'needs_human';
-      incident.decision = 'escalate';
+      incident.status = 'remediation_failed';
+      incident.decision = 'fix_pr';
       incident.evidence.push(result.message, ...(result.evidence ?? []).map(evidence));
-      incident.events.push(event(new Date().toISOString(), 'escalation', 'Remediation did not produce a verified draft PR.'));
+      incident.events.push(event(new Date().toISOString(), 'remediation_failed', result.message));
     }
   } catch {
-    incident.status = 'needs_human';
-    incident.decision = 'escalate';
+    incident.status = 'remediation_failed';
+    incident.decision = 'fix_pr';
     incident.evidence.push('Remediation failed unexpectedly; no PR was created.');
-    incident.events.push(event(new Date().toISOString(), 'escalation', 'Remediation failed unexpectedly and requires human review.'));
+    incident.events.push(event(new Date().toISOString(), 'remediation_failed', 'The fix attempt failed unexpectedly before a verified PR was created.'));
   }
   await saveAndNotify(incident, options);
 }
@@ -219,7 +220,7 @@ function makeBuildFailureIncident(
   return {
     id: incidentId(options.projectId, deployment.id, 'build'),
     kind: 'build_failure',
-    status: 'needs_human',
+    status: 'detected',
     detectedAt: at,
     projectId: options.projectId,
     deploymentId: deployment.id,
@@ -254,7 +255,7 @@ function makeIncident(
   const incident: Incident = {
     id: incidentId(options.projectId, current.id, options.probePath),
     kind,
-    status: decision.action === 'fix_pr' ? 'needs_human' : 'detected',
+    status: 'detected',
     detectedAt: at,
     projectId: options.projectId,
     deploymentId: current.id,
@@ -263,15 +264,18 @@ function makeIncident(
     previousDeploymentUrl: previous ? safeImmutableUrl(previous.immutableUrl, options.provider) : undefined,
     probePath: options.probePath,
     evidence: [
-      `${consecutiveFailures} consecutive failures observed since ${firstFailureAt}.`,
+      options.logSignal
+        ? `${consecutiveFailures} occurrences of the same server error in one log pull.`
+        : `${consecutiveFailures} consecutive failures observed since ${firstFailureAt}.`,
       `Current deployment probe: ${currentEvidence}`,
       ...(previous ? [`Immediate predecessor probe (${previousProbe}): ${previousEvidence}`] : ['Immediate predecessor is unavailable or could not be verified.']),
-      ...(decision.action === 'fix_pr' ? ['Remediation is not wired in this controller milestone; no PR was created.'] : []),
       ...(!currentDeploymentIsProduction ? ['The affected deployment is no longer confirmed as production.'] : []),
     ].map(evidence),
     decision: decision.action === 'monitor' ? undefined : decision.action,
     events: [
-      event(at, 'detected', `Incident detected after ${consecutiveFailures} consecutive failures of ${options.probePath}.`),
+      event(at, 'detected', options.logSignal
+        ? `Incident detected from ${consecutiveFailures} matching errors in one log pull.`
+        : `Incident detected after ${consecutiveFailures} consecutive failures of ${options.probePath}.`),
       event(at, 'investigation', `Current and predecessor deployment evidence collected for ${options.probePath}.`),
       event(at, 'decision', decision.reason),
     ],
@@ -279,12 +283,36 @@ function makeIncident(
   return incident;
 }
 
-/** Stable identity for one server failure, so three pulls of the same crash count together. */
+/** Stable identity for repeated occurrences of one server failure. */
 export function serverErrorSignature(log: RuntimeLog): string | null {
   const serverError = (log.statusCode !== undefined && log.statusCode >= 500) || log.level === 'error';
   if (!serverError) return null;
   const message = log.message.toLowerCase().replace(/[0-9a-f]{6,}/g, '#').replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().slice(0, 180);
   return message || null;
+}
+
+/** Count one occurrence per unique log ID; an old batch alone cannot trigger again. */
+export function runtimeLogSignal(logs: RuntimeLog[], fresh: RuntimeLog[], deploymentId: string): MonitorOptions['logSignal'] {
+  const groups = new Map<string, Set<string>>();
+  for (const log of logs) {
+    const signature = serverErrorSignature(log);
+    if (!signature) continue;
+    const ids = groups.get(signature) ?? new Set<string>();
+    ids.add(log.id);
+    groups.set(signature, ids);
+  }
+  const freshSignatures = new Set(fresh.map(serverErrorSignature).filter(Boolean));
+  const match = [...groups].filter(([signature, ids]) => ids.size >= 3 && freshSignatures.has(signature))
+    .sort((a, b) => b[1].size - a[1].size)[0];
+  if (!match) return undefined;
+  return {
+    evidence: `Server error repeated ${match[1].size} times in one log pull: ${match[0]}`,
+    occurrences: match[1].size, logs, deploymentId,
+  };
+}
+
+function runtimeLogContext(logs: RuntimeLog[]): string[] {
+  return logs.map(log => JSON.stringify({ ...log, message: redactFull(log.message) }));
 }
 
 export async function checkProject(options: MonitorOptions): Promise<MonitorResult> {
@@ -319,6 +347,10 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
   }
   if (!current) return { action: 'unavailable', reason: 'No current production deployment is available.' };
 
+  if (options.logSignal && options.logSignal.deploymentId !== current.id) {
+    return { action: 'unavailable', reason: 'Production changed after the log batch was fetched; retry with the active deployment.' };
+  }
+
   const currentUrl = safeImmutableUrl(current.immutableUrl, options.provider);
   if (!currentUrl) return { action: 'unavailable', reason: 'Provider returned an invalid immutable deployment URL.' };
 
@@ -344,7 +376,9 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
 
   const observedAt = now().toISOString();
   const streakKey = options.logSignal ? 'runtime-log' : probePath;
-  const streak = await options.store.recordProbe(options.projectId, current.id, streakKey, currentProbe, observedAt);
+  const streak = options.logSignal
+    ? { consecutiveFailures: options.logSignal.occurrences, firstFailureAt: observedAt }
+    : await options.store.recordProbe(options.projectId, current.id, streakKey, currentProbe, observedAt);
   if (currentProbe !== 'fail') {
     return {
       action: 'monitor',
@@ -358,7 +392,7 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
       action: 'monitor',
       consecutiveFailures: streak.consecutiveFailures,
       reason: options.logSignal
-        ? 'Waiting for the same server error on three log pulls.'
+        ? 'Waiting for at least three occurrences of the same server error in one log pull.'
         : 'Waiting for three consecutive failures of the same probe.',
       probe: currentResponse,
     };
@@ -368,39 +402,26 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
   const existing = await options.store.get(id);
   if (existing) {
     let updated = false;
+    if (options.logSignal) {
+      existing.runtimeLogs = runtimeLogContext(options.logSignal.logs);
+      await options.store.save(existing);
+      updated = true;
+    }
     const lastActivity = Date.parse(existing.events.at(-1)?.at ?? existing.detectedAt);
     const actionStalled = existing.status === 'detected' && existing.decision === 'rollback'
       || existing.status === 'rolling_back' && now().getTime() - lastActivity > 2 * 60_000;
     if (actionStalled) {
-      existing.status = 'needs_human';
-      existing.decision = 'escalate';
+      existing.status = 'remediation_failed';
+      existing.decision = 'fix_pr';
       existing.evidence.push('A previous controller action did not reach a recorded terminal result; no retry was made.');
-      existing.events.push(event(now().toISOString(), 'escalation', 'An interrupted or stalled rollback requires human verification.'));
+      existing.events.push(event(now().toISOString(), 'remediation_failed', 'The previous rollback did not reach a terminal result. Attempting a repository fix without repeating rollback.'));
       await options.store.save(existing);
       updated = true;
     }
     const fixAttempts = existing.events.filter(item => item.type === 'remediation_started').length;
-    const fixStoppedEarly = existing.status === 'needs_human' && !existing.actionUrl && fixAttempts < 3;
+    const fixStoppedEarly = ['needs_human', 'remediation_failed'].includes(existing.status) && fixAttempts < 3
+      && !existing.events.some(item => item.type === 'draft_pr');
     if (fixStoppedEarly && options.actions?.remediate) {
-      const protectedPredecessor = existing.evidence.some(line => /predecessor probe \(unknown\): HTTP 40[13]/.test(line));
-      if (protectedPredecessor && existing.deploymentId && options.allowlistedProjectIds.has(existing.projectId)
-        && await options.store.claimRollback(existing.deploymentId, now().toISOString())) {
-        try {
-          const previous = await options.provider.getPreviousDeployment(existing.projectId, existing.deploymentId);
-          if (previous) {
-            existing.status = 'rolling_back';
-            existing.events.push(event(now().toISOString(), 'rollback_started', 'Restoring the previous deployment. Its URL is protected, so the app probe could not read it.'));
-            await options.store.save(existing);
-            const rollback = await options.provider.rollbackProductionTo(existing.projectId, previous.id);
-            existing.events.push(event(now().toISOString(), 'rollback_completed', `Production alias moved to the previous deployment: ${rollback.actionUrl}`));
-            const verification = await options.provider.probeProduction(existing.projectId, existing.probePath ?? '/api/tasks');
-            existing.events.push(event(now().toISOString(), 'verification', `Production recovery check: ${verification.evidence}`));
-            if (verification.result === 'pass') existing.evidence.push('Production was restored to the previous deployment before the fix.');
-          }
-        } catch {
-          existing.events.push(event(now().toISOString(), 'escalation', 'Rollback to the protected predecessor did not complete. The fix will still be attempted.'));
-        }
-      }
       existing.events.push(event(now().toISOString(), 'remediation_retry', 'Retrying the fix. The previous attempt stopped before a pull request.'));
       await options.store.save(existing);
       await finishRemediation(existing, options);
@@ -481,6 +502,9 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
     now().toISOString(),
   );
 
+  if (options.logSignal) {
+    incident.runtimeLogs = runtimeLogContext(options.logSignal.logs);
+  }
   await appendDeploymentLogs(incident, options, current.id);
 
   if (decision.action !== 'rollback') {
@@ -490,11 +514,11 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
 
   await options.store.save(incident);
   if (!await options.store.claimRollback(current.id, now().toISOString())) {
-    incident.status = 'needs_human';
-    incident.decision = 'escalate';
+    incident.status = 'remediation_failed';
+    incident.decision = 'fix_pr';
     incident.evidence.push('A rollback attempt was already recorded for this deployment; no repeat action was made.');
-    incident.events.push(event(now().toISOString(), 'escalation', 'Rollback attempt guard prevented another action.'));
-    await saveAndNotify(incident, options);
+    incident.events.push(event(now().toISOString(), 'rollback_skipped', 'A rollback was already attempted. Continuing with repository investigation and a fix.'));
+    await finishRemediation(incident, options);
     return { action: 'incident', incident, probe: currentResponse };
   }
 
@@ -508,11 +532,11 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
     if (actionUrl) incident.actionUrl = actionUrl;
     incident.events.push(event(now().toISOString(), 'rollback_completed', 'Rollback provider accepted the action; recovery is not yet verified.'));
   } catch (error) {
-    incident.status = 'needs_human';
-    incident.decision = 'escalate';
+    incident.status = 'remediation_failed';
+    incident.decision = 'fix_pr';
     incident.evidence.push(evidence(`Rollback request failed: ${String(error)}`));
-    incident.events.push(event(now().toISOString(), 'escalation', 'Rollback request failed; no retry will be attempted.'));
-    await saveAndNotify(incident, options);
+    incident.events.push(event(now().toISOString(), 'rollback_failed', 'Rollback failed. Continuing with repository investigation and a fix.'));
+    await finishRemediation(incident, options);
     return { action: 'incident', incident, probe: currentResponse };
   }
 
@@ -540,10 +564,10 @@ export async function checkProject(options: MonitorOptions): Promise<MonitorResu
     incident.evidence.push('The failing commit was removed from production by restoring the previous deployment.');
     incident.events.push(event(now().toISOString(), 'verification', `Production recovery verified: ${verificationEvidence}`));
   } else {
-    incident.status = 'needs_human';
-    incident.decision = 'escalate';
+    incident.status = 'remediation_failed';
+    incident.decision = 'fix_pr';
     incident.evidence.push(evidence(`Rollback recovery verification failed: ${verificationEvidence}`));
-    incident.events.push(event(now().toISOString(), 'escalation', 'Recovery was not verified; no additional rollback will be attempted.'));
+    incident.events.push(event(now().toISOString(), 'remediation_failed', 'Production recovery was not verified. Preparing a repository fix without repeating rollback.'));
   }
   if (options.actions?.remediate) {
     await finishRemediation(incident, options);

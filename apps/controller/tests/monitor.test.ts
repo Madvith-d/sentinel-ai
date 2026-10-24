@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { IncidentStore } from '../src/incident-store';
-import { checkProject, type DeploymentProvider, type ProbeResponse } from '../src/monitor';
+import { checkProject, runtimeLogSignal, type RuntimeLog, type DeploymentProvider, type ProbeResponse } from '../src/monitor';
 
 const current = {
   id: 'current-deployment',
@@ -65,16 +65,56 @@ function monitorOptions(deploymentProvider: DeploymentProvider) {
 }
 
 describe('checkProject', () => {
-  it('opens one incident after the same server log fails three pulls', async () => {
+  it('starts immediately from three matching errors in one pull and passes the entire redacted batch to remediation', async () => {
+    const fake = provider({ previousResult: 'fail' });
+    const options = monitorOptions(fake.implementation);
+    const stack = `Task service failed password=secret\n${'    at service.run (route.ts:10:5)\n'.repeat(150)}stack-end`;
+    const logs: RuntimeLog[] = Array.from({ length: 3 }, (_, i) => ({
+      id: `req-${i}:0`, message: stack, level: 'error', statusCode: 500, timestamp: at.getTime() + i, isError: true,
+    }));
+    logs.push({ id: 'healthy', message: 'healthy context', level: 'info', statusCode: 200, timestamp: at.getTime(), isError: false });
+    const signal = runtimeLogSignal(logs, logs, current.id);
+    expect(signal?.occurrences).toBe(3);
+    let received: string[] | undefined;
+    const result = await checkProject({ ...options, logSignal: signal, actions: {
+      remediate: async incident => { received = incident.runtimeLogs; return { ok: true, message: 'Fix prepared' }; },
+    } });
+    expect(result.action).toBe('incident');
+    expect(received).toHaveLength(4);
+    expect(received?.[0]).toContain('stack-end');
+    expect(received?.[0]).toContain('[REDACTED]');
+    expect(received?.join('')).not.toContain('password=secret');
+    expect(received?.[3]).toContain('healthy context');
+    if (result.action === 'incident') expect((await store.get(result.incident.id))?.runtimeLogs).toEqual(received);
+    expect(fake.calls.rollback).toBe(0);
+    const repeated = await checkProject({ ...options, logSignal: signal });
+    expect(repeated.action === 'incident' && repeated.duplicate).toBe(true);
+  });
+
+  it('does not combine small batches across pulls or count duplicate log IDs', async () => {
     const fake = provider();
     const options = monitorOptions(fake.implementation);
-    const signal = { logSignal: { evidence: 'Server log repeated: task service failed' } };
-    expect((await checkProject({ ...options, ...signal })).action).toBe('monitor');
-    expect((await checkProject({ ...options, ...signal })).action).toBe('monitor');
-    const result = await checkProject({ ...options, ...signal });
-    expect(result.action).toBe('incident');
-    if (result.action === 'incident') expect(result.incident.evidence.some(line => line.includes('task service failed'))).toBe(true);
-    expect(fake.calls.rollback).toBeLessThanOrEqual(1);
+    const log: RuntimeLog = { id: 'req-1', message: 'task failed', level: 'error', timestamp: at.getTime(), isError: true };
+    const two = [log, { ...log, id: 'req-2' }];
+    expect(runtimeLogSignal(two, two, current.id)).toBeUndefined();
+    expect(runtimeLogSignal([log, log, log], [log], current.id)).toBeUndefined();
+    const three = [...two, { ...log, id: 'req-3' }];
+    expect(runtimeLogSignal(three, [], current.id)).toBeUndefined();
+    expect(runtimeLogSignal([...three, { ...log, id: 'req-4' }], three, current.id)?.occurrences).toBe(4);
+    expect(runtimeLogSignal([log, { ...log, id: 'b', message: 'different failure' }, { ...log, id: 'c', message: 'another failure' }], three, current.id)).toBeUndefined();
+    for (let i = 0; i < 3; i++) {
+      const result = await checkProject({ ...options, logSignal: { evidence: 'two errors', occurrences: 2, logs: two, deploymentId: current.id } });
+      expect(result.action).toBe('monitor');
+    }
+    expect(fake.calls.rollback).toBe(0);
+  });
+
+  it('does not act on a log batch belonging to a deployment that left production', async () => {
+    const fake = provider();
+    const options = monitorOptions(fake.implementation);
+    const result = await checkProject({ ...options, logSignal: { evidence: 'Repeated error', occurrences: 3, logs: [], deploymentId: 'old-deployment' } });
+    expect(result.action).toBe('unavailable');
+    expect(fake.calls.rollback).toBe(0);
   });
 
   it('records a failed build for remediation without rolling back healthy production', async () => {
@@ -91,8 +131,8 @@ describe('checkProject', () => {
     expect(result.action).toBe('incident');
     if (result.action !== 'incident') throw new Error('Expected a build incident.');
     expect(result.incident.kind).toBe('build_failure');
-    expect(result.incident.decision).toBe('escalate');
-    expect(result.incident.status).toBe('needs_human');
+    expect(result.incident.decision).toBe('fix_pr');
+    expect(result.incident.status).toBe('remediation_failed');
     expect(fake.calls.rollback).toBe(0);
   });
 
@@ -183,12 +223,12 @@ describe('checkProject', () => {
     expect(result.action).toBe('incident');
     if (result.action !== 'incident') throw new Error('Expected an incident result.');
     expect(result.incident.kind).toBe('persistent_defect');
-    expect(result.incident.decision).toBe('escalate');
-    expect(result.incident.status).toBe('needs_human');
+    expect(result.incident.decision).toBe('fix_pr');
+    expect(result.incident.status).toBe('remediation_failed');
     expect(fake.calls.rollback).toBe(0);
   });
 
-  it('escalates without rollback when the predecessor is missing', async () => {
+  it('records unavailable remediation when the predecessor is missing', async () => {
     const fake = provider();
     const noPredecessor: DeploymentProvider = {
       ...fake.implementation,
@@ -201,12 +241,12 @@ describe('checkProject', () => {
 
     expect(result.action).toBe('incident');
     if (result.action !== 'incident') throw new Error('Expected an incident result.');
-    expect(result.incident.status).toBe('needs_human');
-    expect(result.incident.decision).toBe('escalate');
+    expect(result.incident.status).toBe('remediation_failed');
+    expect(result.incident.decision).toBe('fix_pr');
     expect(fake.calls.rollback).toBe(0);
   });
 
-  it('escalates when the deployment is not recent relative to the failure', async () => {
+  it('records unavailable remediation for an older deployment', async () => {
     const fake = provider();
     const staleProvider: DeploymentProvider = {
       ...fake.implementation,
@@ -219,8 +259,8 @@ describe('checkProject', () => {
 
     expect(result.action).toBe('incident');
     if (result.action !== 'incident') throw new Error('Expected an incident result.');
-    expect(result.incident.status).toBe('needs_human');
-    expect(result.incident.decision).toBe('escalate');
+    expect(result.incident.status).toBe('remediation_failed');
+    expect(result.incident.decision).toBe('fix_pr');
     expect(fake.calls.rollback).toBe(0);
   });
 
@@ -233,13 +273,13 @@ describe('checkProject', () => {
 
     expect(result.action).toBe('incident');
     if (result.action !== 'incident') throw new Error('Expected an incident result.');
-    expect(result.incident.status).toBe('needs_human');
-    expect(result.incident.decision).toBe('escalate');
+    expect(result.incident.status).toBe('remediation_failed');
+    expect(result.incident.decision).toBe('fix_pr');
     expect(fake.calls.rollback).toBe(1);
     expect(fake.calls.recoveryProbes).toBe(2);
   });
 
-  it('escalates for a project outside the rollback allowlist', async () => {
+  it('records unavailable remediation outside the rollback allowlist', async () => {
     const fake = provider();
     const options = { ...monitorOptions(fake.implementation), allowlistedProjectIds: new Set<string>() };
     await checkProject(options);
@@ -248,8 +288,8 @@ describe('checkProject', () => {
 
     expect(result.action).toBe('incident');
     if (result.action !== 'incident') throw new Error('Expected an incident result.');
-    expect(result.incident.status).toBe('needs_human');
-    expect(result.incident.decision).toBe('escalate');
+    expect(result.incident.status).toBe('remediation_failed');
+    expect(result.incident.decision).toBe('fix_pr');
     expect(fake.calls.rollback).toBe(0);
   });
 });

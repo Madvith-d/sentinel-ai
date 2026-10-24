@@ -25,16 +25,16 @@ describe('decideIncident', () => {
 
   it('allows one rollback only for an allowlisted fresh regression', () => {
     expect(decideIncident(baseAssessment).action).toBe('rollback');
-    expect(decideIncident({ ...baseAssessment, rollbackAlreadyAttempted: true }).action).toBe('escalate');
+    expect(decideIncident({ ...baseAssessment, rollbackAlreadyAttempted: true }).action).toBe('fix_pr');
   });
 
-  it('escalates when a required safety check fails', () => {
-    expect(decideIncident({ ...baseAssessment, projectId: 'other-project' }).action).toBe('escalate');
-    expect(decideIncident({ ...baseAssessment, currentDeploymentIsProduction: false }).action).toBe('escalate');
-    expect(decideIncident({ ...baseAssessment, previousProbe: 'unknown' }).action).toBe('escalate');
+  it('chooses a repository fix when rollback evidence is insufficient', () => {
+    expect(decideIncident({ ...baseAssessment, projectId: 'other-project' }).action).toBe('fix_pr');
+    expect(decideIncident({ ...baseAssessment, currentDeploymentIsProduction: false }).action).toBe('fix_pr');
+    expect(decideIncident({ ...baseAssessment, previousProbe: 'unknown' }).action).toBe('fix_pr');
     expect(decideIncident({ ...baseAssessment, previousProbe: 'unknown', previousProtected: true }).action).toBe('rollback');
-    expect(decideIncident({ ...baseAssessment, previousProbePath: '/api/health' }).action).toBe('escalate');
-    expect(decideIncident({ ...baseAssessment, evidenceConsistent: false }).action).toBe('escalate');
+    expect(decideIncident({ ...baseAssessment, previousProbePath: '/api/health' }).action).toBe('fix_pr');
+    expect(decideIncident({ ...baseAssessment, evidenceConsistent: false }).action).toBe('fix_pr');
   });
 
   it('chooses remediation when the predecessor has the same failure', () => {

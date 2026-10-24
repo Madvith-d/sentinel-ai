@@ -5,7 +5,7 @@ Bun/TypeScript package for the **fix-PR path only**. The trusted local controlle
 ## Implemented
 
 - Creates a 10-minute E2B sandbox from the configured 4 GiB+ custom template, clones the allowlisted public `iotserver24/nexathon` repo at an exact 40-character SHA, uses preinstalled **Bun 1.3.11** (or installs it when using another compatible template) and runs the configured setup command.
-- Requires the reproduction command to fail *before* any patch. Uses preinstalled verified published **Supercharge CLI 1.3.30** in the sandbox (or installs it as a fallback) (the hosted installer currently needs `SUPERCHARGE_GITHUB_REPO=iotserver24/supercharge-releases`). Configures a dedicated model provider and GitHub's remote MCP in read-only mode using a separate read-only token.
+- Runs the configured reproduction first. If it passes, the agent investigates the code and full runtime logs and adds an incident-specific regression test; the controller independently verifies that test fails against the original source and passes after the fix. Existing tests may not be weakened. Uses preinstalled verified published **Supercharge CLI 1.3.30** in the sandbox (or installs it as a fallback) (the hosted installer currently needs `SUPERCHARGE_GITHUB_REPO=iotserver24/supercharge-releases`). Configures a dedicated model provider and GitHub's remote MCP in read-only mode using a separate read-only token.
 - Runs Supercharge headlessly with a prompt file, automatic tool approval **only inside E2B**, no subagents, an 18-turn cap, and a 270-second command cap. Files from GitHub, PRs and logs are untrusted inputs. Limits edited files to `apps/sample/`.
 - Runs reproduction, all tests, and build again. Returns a bounded unified patch plus redacted evidence; refuses empty, binary, symlink, secret-bearing, outside-path, failed-test, or failed-build changes. Destroys the sandbox in `finally`.
 - A separate **controller-only** `publishDraftPr()` revalidates the patch, clones the exact base SHA into a temporary directory, applies it, pushes `agent/incident-<id>` via a controller-only `GH_TOKEN`, and opens a **draft** PR. No write token enters E2B.
@@ -82,7 +82,7 @@ if (fix.ok) {
   const pr = await publishDraftPr(request, fix); // controller machine only; GH_TOKEN required
   // Persist pr.url, notify Slack, and leave review/merge to humans.
 } else {
-  // Persist fix.reason + fix.message and escalate; never open an unverified PR.
+  // Persist fix.reason + fix.message as a failed automatic attempt; never open an unverified PR.
 }
 ```
 

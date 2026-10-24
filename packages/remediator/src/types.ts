@@ -4,6 +4,7 @@ export interface RemediationRequest {
   repository: string; // owner/repo, allowlisted by REMEDIATOR_REPOSITORY
   commitSha: string; // full 40-character production/build SHA
   evidence: string[]; // redacted before calling this package
+  runtimeLogs?: string[]; // complete redacted batch, including stack traces
   setupCommand: string;
   reproduceCommand: string;
   testCommand: string;

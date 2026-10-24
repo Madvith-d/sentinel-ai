@@ -18,7 +18,7 @@ export interface IncidentAssessment {
   rollbackAlreadyAttempted: boolean;
 }
 
-export type IncidentAction = 'monitor' | 'rollback' | 'fix_pr' | 'escalate';
+export type IncidentAction = 'monitor' | 'rollback' | 'fix_pr';
 
 export interface IncidentDecision {
   action: IncidentAction;
@@ -42,35 +42,35 @@ export function decideIncident(assessment: IncidentAssessment): IncidentDecision
 
   if (!assessment.evidenceConsistent || assessment.currentProbe !== 'fail') {
     return {
-      action: 'escalate',
+      action: 'fix_pr',
       reason: 'Probe evidence is conflicting or does not confirm a current-deployment failure.',
     };
   }
 
   if (!assessment.allowlistedProjectIds.has(assessment.projectId)) {
     return {
-      action: 'escalate',
+      action: 'fix_pr',
       reason: 'The project is not on the controller rollback allowlist.',
     };
   }
 
   if (!assessment.currentDeploymentIsProduction) {
     return {
-      action: 'escalate',
+      action: 'fix_pr',
       reason: 'The affected deployment is not confirmed as the current production deployment.',
     };
   }
 
   if (!assessment.currentDeploymentIsRecent) {
     return {
-      action: 'escalate',
+      action: 'fix_pr',
       reason: 'The deployment is outside the configured incident recency window.',
     };
   }
 
   if (!assessment.probePath || assessment.previousProbePath !== assessment.probePath) {
     return {
-      action: 'escalate',
+      action: 'fix_pr',
       reason: 'The current and predecessor must be probed on the same confirmed route.',
     };
   }
@@ -78,7 +78,7 @@ export function decideIncident(assessment: IncidentAssessment): IncidentDecision
   if (!assessment.previousDeploymentId || !assessment.previousProbe
     || (assessment.previousProbe === 'unknown' && !assessment.previousProtected)) {
     return {
-      action: 'escalate',
+      action: 'fix_pr',
       reason: 'A trustworthy predecessor and its same-route probe result are required.',
     };
   }
@@ -86,7 +86,7 @@ export function decideIncident(assessment: IncidentAssessment): IncidentDecision
   if (assessment.previousProbe === 'pass' || assessment.previousProtected) {
     if (assessment.rollbackAlreadyAttempted) {
       return {
-        action: 'escalate',
+        action: 'fix_pr',
         reason: 'A rollback was already attempted for this deployment; no retry is allowed.',
       };
     }

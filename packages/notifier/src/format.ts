@@ -1,8 +1,9 @@
 import type { Incident } from '@nexathon/contracts';
 export type { Incident } from '@nexathon/contracts';
 
-export function redact(value: string, maxLength = 600): string {
-  const clean = value
+/** Redact credentials while preserving the complete log message and stack trace. */
+export function redactFull(value: string): string {
+  return value
     .replace(/((?:["']?[\w.-]*(?:token|secret|password|passwd|api[_-]?key|authorization|cookie)[\w.-]*["']?)\s*[:=]\s*)(?!(?:Bearer|Basic)\s)(?:"[^"\n]*"|'[^'\n]*'|[^\s,;&]+)/gi, '$1[REDACTED]')
     .replace(/https:\/\/hooks\.slack(?:-gov)?\.com\/services\/[^\s<>"']+/gi, '[REDACTED webhook]')
     .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9+/_.=-]+/gi, '[REDACTED authorization]')
@@ -10,6 +11,10 @@ export function redact(value: string, maxLength = 600): string {
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[REDACTED JWT]')
     .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[REDACTED]@')
     .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '');
+}
+
+export function redact(value: string, maxLength = 600): string {
+  const clean = redactFull(value);
   const limit = Math.max(1, Math.min(maxLength, 3000));
   return clean.length > limit ? `${clean.slice(0, limit - 1)}…` : clean;
 }
@@ -29,13 +34,13 @@ export function safeLink(value?: string): string | undefined {
 
 export const statusLabels: Record<Incident['status'], string> = {
   detected: 'Detected', investigating: 'Investigating', rolling_back: 'Rolling back',
-  remediating: 'Preparing fix', recovered: 'Recovered', pr_opened: 'PR opened', needs_human: 'Needs human',
+  remediating: 'Preparing fix', recovered: 'Recovered', pr_opened: 'PR opened', needs_human: 'Fix pending', remediation_failed: 'Fix attempt failed',
 };
 export const kindLabels: Record<Incident['kind'], string> = {
   runtime_regression: 'Fresh runtime regression', persistent_defect: 'Persistent defect', build_failure: 'Failed build',
 };
 export const decisionLabels: Record<NonNullable<Incident['decision']>, string> = {
-  rollback: 'Rollback', fix_pr: 'Open fix PR', escalate: 'Escalate to a human',
+  rollback: 'Rollback', fix_pr: 'Open fix PR', escalate: 'Investigate and prepare fix',
 };
 export const rollbackCaveat = 'After a Vercel rollback, automatic production-domain assignment can be disabled until a human promotes a repaired deployment.';
 
@@ -57,7 +62,7 @@ function escapeHtml(value: string): string {
 
 function statusTone(status: Incident['status']): { background: string; text: string } {
   if (status === 'recovered') return { background: '#dcfce7', text: '#166534' };
-  if (status === 'needs_human') return { background: '#fee2e2', text: '#991b1b' };
+  if (['needs_human', 'remediation_failed'].includes(status)) return { background: '#fee2e2', text: '#991b1b' };
   if (status === 'rolling_back' || status === 'remediating') return { background: '#fef3c7', text: '#92400e' };
   return { background: '#dbeafe', text: '#1e40af' };
 }
@@ -79,7 +84,7 @@ export function formatIncidentReport(incident: Incident): IncidentReport {
   if (incident.events.length) lines.push(`Latest event: ${redact([...incident.events].sort((a, b) => a.at.localeCompare(b.at)).at(-1)!.message, 350)}`);
   if (incident.status === 'pr_opened') lines.push('Pull request is open for review. No code is merged automatically.');
   if (incident.status === 'rolling_back') lines.push('Rollback is in progress; recovery is not yet verified.');
-  if (incident.status === 'needs_human') lines.push('Human review required. No further automatic action should be assumed.');
+  if (['needs_human', 'remediation_failed'].includes(incident.status)) lines.push('A verified fix PR is not available yet. See the incident timeline for the latest fix attempt and any configuration errors.');
   if (incident.decision === 'rollback') lines.push(rollbackCaveat);
   const action = safeLink(incident.actionUrl);
   if (action) lines.push(`Action: ${action}`);
@@ -94,7 +99,7 @@ export function formatIncidentReport(incident: Incident): IncidentReport {
   const notes = [
     incident.status === 'pr_opened' ? 'Pull request is open for review. No code is merged automatically.' : '',
     incident.status === 'rolling_back' ? 'Rollback is in progress; recovery is not yet verified.' : '',
-    incident.status === 'needs_human' ? 'Human review required. No further automatic action should be assumed.' : '',
+    ['needs_human', 'remediation_failed'].includes(incident.status) ? 'A verified fix PR is not available yet. See the incident timeline for the latest fix attempt and any configuration errors.' : '',
     incident.decision === 'rollback' ? rollbackCaveat : '',
   ].filter(Boolean);
   const html = `<!doctype html><html><body style="margin:0;background:#f1f5f9;color:#0f172a;font-family:Arial,Helvetica,sans-serif;">

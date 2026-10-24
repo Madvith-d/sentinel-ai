@@ -18,6 +18,11 @@ describe('incident response parsing', () => {
     expect(parsed.map(item => item.id)).toEqual(['one']);
   });
 
+  test('accepts an automatic fix failure without requiring human escalation', () => {
+    expect(parseIncident({ ...incident, status: 'remediation_failed', decision: 'fix_pr' }).status).toBe('remediation_failed');
+    expect(parseIncident({ ...incident, status: 'needs_human', decision: 'escalate' }).status).toBe('needs_human');
+  });
+
   test('rejects duplicate IDs and invalid states', () => {
     expect(() => parseIncidentList([incident, incident])).toThrow('Duplicate incident IDs');
     expect(() => parseIncident({ ...incident, status: 'done' })).toThrow('Invalid incident state');

@@ -3,7 +3,7 @@ import { redact } from '@nexathon/notifier/format';
 export type { Incident } from '@nexathon/contracts';
 
 const kinds = ['runtime_regression', 'persistent_defect', 'build_failure'];
-const statuses = ['detected', 'investigating', 'rolling_back', 'remediating', 'recovered', 'pr_opened', 'needs_human'];
+const statuses = ['detected', 'investigating', 'rolling_back', 'remediating', 'recovered', 'pr_opened', 'needs_human', 'remediation_failed'];
 const decisions = ['rollback', 'fix_pr', 'escalate'];
 const optional = ['deploymentId', 'deploymentUrl', 'commitSha', 'previousDeploymentUrl', 'probePath', 'actionUrl'] as const;
 

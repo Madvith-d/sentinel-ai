@@ -55,6 +55,7 @@ async function runRemediation(incident: Incident, config: RemediationConfig, hub
     repository: config.repository,
     commitSha: incident.commitSha,
     evidence: incident.evidence,
+    ...(incident.runtimeLogs ? { runtimeLogs: incident.runtimeLogs } : {}),
     setupCommand: config.setupCommand,
     reproduceCommand: config.reproduceCommand,
     testCommand: config.testCommand,

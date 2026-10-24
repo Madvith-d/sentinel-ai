@@ -1,5 +1,5 @@
 import type { Deployment, DeploymentProvider, DeploymentState, DeploymentStatus, DeploymentSummary, ProbeResponse, RateLimitInfo, RuntimeLog } from './monitor';
-import { redact } from '@nexathon/notifier/format';
+import { redact, redactFull } from '@nexathon/notifier/format';
 
 const apiBase = 'https://api.vercel.com';
 
@@ -313,7 +313,7 @@ export class VercelProvider implements DeploymentProvider {
         logs.push({
           id: `${requestId}:${index}`,
           level,
-          message: redact(where ? `${where} — ${message}` : message, 600),
+          message: redactFull(where ? `${where} — ${message}` : message),
           ...(statusCode !== undefined ? { statusCode } : {}),
           timestamp: Number.isFinite(timestamp) ? timestamp : now,
           isError: level === 'error' || (statusCode !== undefined && statusCode >= 500),

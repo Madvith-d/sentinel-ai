@@ -40,6 +40,11 @@ export function validateRequest(request: RemediationRequest, repository = allowe
   if (!Array.isArray(request.evidence) || request.evidence.length > 20 || request.evidence.some((line) => typeof line !== 'string' || line.length > 1000)) {
     throw new Error('Evidence must be redacted and bounded');
   }
+  if (request.runtimeLogs !== undefined && (!Array.isArray(request.runtimeLogs)
+    || request.runtimeLogs.some(line => typeof line !== 'string')
+    || Buffer.byteLength(JSON.stringify(request.runtimeLogs)) > 5_000_000)) {
+    throw new Error('Runtime logs must be redacted strings totaling at most 5 MB; logs were not silently truncated');
+  }
   if (request.reproductionFixture) {
     const { path, content } = request.reproductionFixture;
     const fixturePattern = new RegExp(`^${escapeRegExp(allowedPathPrefix())}tests/[A-Za-z0-9._/-]+\\.test\\.ts$`);

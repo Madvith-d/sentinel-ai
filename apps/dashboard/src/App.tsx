@@ -71,7 +71,9 @@ function actionSummary(incident: Incident) {
   if (incident.status === 'pr_opened') return 'A pull request is open for review. Nothing has been merged.';
   if (incident.status === 'recovered' && restored) return 'Production was restored to the previous deploy. The fix follows that rollback.';
   if (incident.status === 'recovered') return 'Production recovery was verified after the guarded action.';
-  if (incident.status === 'needs_human') return 'Automatic work stopped because the evidence was not safe to act on.';
+  if (incident.status === 'remediation_failed') return [...incident.events].reverse()
+    .find(event => event.type === 'remediation_failed')?.message ?? 'The latest fix attempt failed. See the timeline for details.';
+  if (incident.status === 'needs_human') return 'A repository investigation and fix will be attempted when the failure is observed again.';
   return 'The controller is collecting evidence before taking action.';
 }
 
@@ -262,7 +264,7 @@ function Detail({ incident, watch }: { incident: Incident; watch: WatchState | n
     </section>
     {rolledBack(incident) && <ol className="rollback-steps">
       <li>Rollback — production moved back to the previous deploy.</li>
-      <li>{incident.status === 'pr_opened' ? 'Fix — a pull request is open for that bad commit.' : incident.status === 'needs_human' ? 'Fix — automatic work stopped and needs a person.' : 'Fix — the agent is working on the bad commit.'}</li>
+      <li>{incident.status === 'pr_opened' ? 'Fix — a pull request is open for that bad commit.' : incident.status === 'remediation_failed' ? 'Fix — the latest attempt failed; see the timeline for details.' : incident.status === 'needs_human' ? 'Fix — waiting for the next automatic attempt.' : 'Fix — the agent is working on the bad commit.'}</li>
     </ol>}
     {(incident.decision === 'rollback' || rolledBack(incident)) && <p className="caveat">{rollbackCaveat}</p>}
     <WatchTelemetry watch={watch} />
@@ -371,7 +373,7 @@ function Dashboard() {
   const [refresh, setRefresh] = useState(0);
   const snapshot = useIncidents(mode, selectedId, refresh);
   const selected = snapshot.detail ?? snapshot.incidents[0] ?? null;
-  const counts = useMemo(() => ({ active: snapshot.incidents.filter(item => !['recovered', 'needs_human', 'pr_opened'].includes(item.status)).length, recovered: snapshot.incidents.filter(item => item.status === 'recovered').length }), [snapshot.incidents]);
+  const counts = useMemo(() => ({ active: snapshot.incidents.filter(item => !['recovered', 'needs_human', 'remediation_failed', 'pr_opened'].includes(item.status)).length, recovered: snapshot.incidents.filter(item => item.status === 'recovered').length }), [snapshot.incidents]);
 
   return <div className="app-shell">
     <header className="topbar"><div className="brand"><img className="brand-logo" src="/logo.png" alt="Sentinel logo" /><span>Sentinel <em>deploy watch</em></span></div><div className="topbar-meta"><LiveWatch onWatch={setWatch} /><span className={`mode-dot ${mode}`} />{mode === 'fixtures' ? 'Rehearsal data' : 'Live controller'}<button className="refresh" onClick={() => setShowSetup(value => !value)} type="button">Setup</button><button className="refresh" onClick={() => setRefresh(value => value + 1)} type="button">Refresh</button></div></header>

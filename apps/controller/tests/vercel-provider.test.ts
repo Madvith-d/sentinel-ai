@@ -282,6 +282,19 @@ describe('VercelProvider', () => {
     }
   });
 
+  it('preserves full runtime stack traces while redacting secrets', async () => {
+    const message = `password=secret\n${'at task.run (route.ts:12:4)\n'.repeat(200)}stack-end`;
+    const fetchMock = (async (input: RequestInfo | URL) => {
+      if (new URL(input.toString()).pathname.startsWith('/v9/projects/')) return Response.json({ accountId: 'team_demo' });
+      return Response.json({ rows: [{ requestId: 'req-stack', logs: [{ level: 'error', message }] }] });
+    }) as typeof fetch;
+    const provider = new VercelProvider({ accessToken: token, projectId, productionDomain: 'demo.example.com', fetch: fetchMock });
+    const logs = await provider.getRuntimeLogs(projectId, 'dpl_current');
+    expect(logs[0]?.message).toContain('stack-end');
+    expect(logs[0]?.message).toContain('[REDACTED]');
+    expect(logs[0]?.message).not.toContain('password=secret');
+  });
+
   it('reads bounded deployment events and marks failures without leaking secrets', async () => {
     const { provider, calls } = mockProvider();
     const logs = await provider.getDeploymentEvents(projectId, 'dpl_current');

@@ -4,7 +4,7 @@ Sentinel is a incident-response control plane for a separately deployed
 web application. It checks application health and deployment status, records
 evidence, and chooses a guarded response: roll back a recent production
 regression, prepare a tested draft pull request for a persistent defect or
-failed build, or escalate when evidence is inconclusive. A local web dashboard
+failed build, and investigate the repository when rollback evidence is inconclusive. A local web dashboard
 shows incidents and remediation activity; notifications can be delivered by
 Slack or SMTP.
 
@@ -57,9 +57,11 @@ and operator-assistance tool, not a general-purpose monitoring service:
 4. A fresh regression with a healthy predecessor can take the guarded rollback
    path, followed by bounded recovery verification. A failed build or defect
    that also affects the predecessor goes to the fix-PR path instead.
-5. Missing or conflicting evidence, failed verification, a failed sandbox, or
-   other unsafe conditions are escalated for human review. The controller
-   prevents a second rollback attempt for the same deployment.
+5. Missing or conflicting rollback evidence routes the incident to repository
+   investigation and a verified fix PR. A passing generic reproduction test
+   lets the agent create an incident-specific regression check. Failed fix
+   attempts report their concrete errors and can retry automatically; the
+   controller prevents a second rollback attempt for the same deployment.
 6. The dashboard shows incident history and safe agent progress. Notifications
    contain concise redacted summaries. No path automatically merges code.
 
