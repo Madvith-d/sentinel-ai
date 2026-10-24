@@ -46,7 +46,20 @@ function escapeSlack(value: string): string {
 
 export interface IncidentReport {
   text: string;
+  html: string;
   blocks: Array<{ type: 'section'; text: { type: 'plain_text' | 'mrkdwn'; text: string; emoji?: boolean } }>;
+}
+
+function escapeHtml(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+}
+
+function statusTone(status: Incident['status']): { background: string; text: string } {
+  if (status === 'recovered') return { background: '#dcfce7', text: '#166534' };
+  if (status === 'needs_human') return { background: '#fee2e2', text: '#991b1b' };
+  if (status === 'rolling_back' || status === 'remediating') return { background: '#fef3c7', text: '#92400e' };
+  return { background: '#dbeafe', text: '#1e40af' };
 }
 
 export function formatIncidentReport(incident: Incident): IncidentReport {
@@ -71,9 +84,46 @@ export function formatIncidentReport(incident: Incident): IncidentReport {
   const action = safeLink(incident.actionUrl);
   if (action) lines.push(`Action: ${action}`);
   const text = lines.join('\n');
+  const tone = statusTone(incident.status);
+  const evidenceHtml = evidence.length
+    ? evidence.map(item => `<li style="margin:0 0 8px;color:#334155;line-height:1.55;">${escapeHtml(item)}</li>`).join('')
+    : '<li style="color:#64748b;line-height:1.55;">No evidence recorded.</li>';
+  const actionHtml = action
+    ? `<p style="margin:24px 0 0;"><a href="${escapeHtml(action)}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;font-weight:700;padding:12px 18px;border-radius:8px;">${incident.decision === 'fix_pr' ? 'Review pull request' : 'View action'} &rarr;</a></p>`
+    : '';
+  const notes = [
+    incident.status === 'pr_opened' ? 'Pull request is open for review. No code is merged automatically.' : '',
+    incident.status === 'rolling_back' ? 'Rollback is in progress; recovery is not yet verified.' : '',
+    incident.status === 'needs_human' ? 'Human review required. No further automatic action should be assumed.' : '',
+    incident.decision === 'rollback' ? rollbackCaveat : '',
+  ].filter(Boolean);
+  const html = `<!doctype html><html><body style="margin:0;background:#f1f5f9;color:#0f172a;font-family:Arial,Helvetica,sans-serif;">
+<div style="padding:32px 16px;background:#f1f5f9;"><div style="max-width:640px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
+  <div style="padding:28px 32px;background:#0f172a;color:#fff;"><div style="font-size:12px;letter-spacing:1.4px;font-weight:700;color:#93c5fd;">NEXATHON / INCIDENT BRIEF</div>
+    <div style="margin-top:18px;font-size:28px;line-height:1.15;font-weight:700;">${escapeHtml(statusLabels[incident.status])}</div>
+    <div style="margin-top:14px;"><span style="display:inline-block;background:${tone.background};color:${tone.text};padding:5px 10px;border-radius:999px;font-size:12px;font-weight:700;">${escapeHtml(kindLabels[incident.kind])}</span></div>
+  </div>
+  <div style="padding:28px 32px;"><p style="margin:0;color:#475569;font-size:15px;line-height:1.55;">An incident update needs your attention. The details below are sanitized for notification.</p>
+    <h2 style="margin:28px 0 12px;font-size:16px;color:#0f172a;">Incident details</h2>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:14px;">
+      <tr><td style="padding:9px 0;border-bottom:1px solid #e2e8f0;color:#64748b;width:34%;">Incident</td><td style="padding:9px 0;border-bottom:1px solid #e2e8f0;font-weight:600;word-break:break-word;">${escapeHtml(incident.id)}</td></tr>
+      <tr><td style="padding:9px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Project</td><td style="padding:9px 0;border-bottom:1px solid #e2e8f0;font-weight:600;word-break:break-word;">${escapeHtml(incident.projectId)}</td></tr>
+      <tr><td style="padding:9px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Detected</td><td style="padding:9px 0;border-bottom:1px solid #e2e8f0;">${escapeHtml(incident.detectedAt)}</td></tr>
+      <tr><td style="padding:9px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Decision</td><td style="padding:9px 0;border-bottom:1px solid #e2e8f0;">${escapeHtml(incident.decision ? decisionLabels[incident.decision] : 'Not decided')}</td></tr>
+      ${incident.deploymentId ? `<tr><td style="padding:9px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Deployment</td><td style="padding:9px 0;border-bottom:1px solid #e2e8f0;word-break:break-word;">${escapeHtml(incident.deploymentId)}</td></tr>` : ''}
+      ${incident.commitSha ? `<tr><td style="padding:9px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Revision</td><td style="padding:9px 0;border-bottom:1px solid #e2e8f0;word-break:break-word;">${escapeHtml(incident.commitSha)}</td></tr>` : ''}
+      ${incident.probePath ? `<tr><td style="padding:9px 0;color:#64748b;">Probe</td><td style="padding:9px 0;word-break:break-word;">${escapeHtml(incident.probePath)}</td></tr>` : ''}
+    </table>
+    <h2 style="margin:28px 0 12px;font-size:16px;color:#0f172a;">Evidence</h2><ul style="margin:0;padding-left:20px;">${evidenceHtml}</ul>
+    ${incident.events.length ? `<h2 style="margin:28px 0 12px;font-size:16px;color:#0f172a;">Latest event</h2><p style="margin:0;color:#334155;line-height:1.55;">${escapeHtml(redact([...incident.events].sort((a, b) => a.at.localeCompare(b.at)).at(-1)!.message, 350))}</p>` : ''}
+    ${notes.length ? `<div style="margin-top:28px;padding:16px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;"><div style="font-size:12px;font-weight:700;color:#9a3412;text-transform:uppercase;letter-spacing:.8px;">Important notes</div><ul style="margin:10px 0 0;padding-left:20px;">${notes.map(note => `<li style="margin:0 0 7px;color:#7c2d12;line-height:1.5;">${escapeHtml(note)}</li>`).join('')}</ul></div>` : ''}
+    ${actionHtml}
+  </div>
+  <div style="padding:18px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;color:#64748b;font-size:12px;line-height:1.5;">Sent by Nexathon. This message is an incident notification; keep the local report as the source of truth.</div>
+</div></div></body></html>`;
   const blocks: IncidentReport['blocks'] = [
     { type: 'section', text: { type: 'plain_text', text: text.replace(/\nAction:.*$/, ''), emoji: false } },
   ];
   if (action) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${escapeSlack(action)}|${incident.decision === 'fix_pr' ? 'Review pull request' : 'View action'}>` } });
-  return { text, blocks };
+  return { text, html, blocks };
 }

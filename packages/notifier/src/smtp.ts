@@ -41,12 +41,12 @@ export function resolveSmtpConfig(env: NodeJS.ProcessEnv = process.env, timeoutM
   };
 }
 
-export async function sendSmtpMail(config: SmtpConfig, subject: string, text: string): Promise<void> {
+export async function sendSmtpMail(config: SmtpConfig, subject: string, text: string, html?: string): Promise<void> {
   const socket = await openSocket(config);
   const reader = createReader(socket);
   const deadline = setTimeout(() => socket.destroy(new Error('SMTP timed out.')), config.timeoutMs);
   try {
-    await session(socket, reader, config, subject, text);
+    await session(socket, reader, config, subject, text, html);
   } catch (error) {
     if (socket.destroyed && /timed out/i.test(String(error))) throw new Error('SMTP timed out.');
     throw error instanceof Error && error.message.startsWith('SMTP') ? error : new Error('SMTP connection failed.');
@@ -67,7 +67,7 @@ function openSocket(config: SmtpConfig): Promise<Socket | TLSSocket> {
   });
 }
 
-async function session(socket: Socket | TLSSocket, reader: Reader, config: SmtpConfig, subject: string, text: string): Promise<void> {
+async function session(socket: Socket | TLSSocket, reader: Reader, config: SmtpConfig, subject: string, text: string, html?: string): Promise<void> {
   await reader.expect([220]);
   await reader.command(socket, 'EHLO sentinel', [250]);
   let active: Socket | TLSSocket = socket;
@@ -86,17 +86,30 @@ async function session(socket: Socket | TLSSocket, reader: Reader, config: SmtpC
   await activeReader.command(active, `MAIL FROM:<${config.from}>`, [250]);
   await activeReader.command(active, `RCPT TO:<${config.to}>`, [250, 251]);
   await activeReader.command(active, 'DATA', [354]);
+  const boundary = `----=_Nexathon_${Date.now().toString(16)}`;
   const body = [
     `From: ${config.from}`,
     `To: ${config.to}`,
     `Subject: ${subject.replace(/[\r\n]/g, ' ').slice(0, 180)}`,
     'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset=utf-8',
+    html ? `Content-Type: multipart/alternative; boundary="${boundary}"` : 'Content-Type: text/plain; charset=utf-8',
     '',
-    dotStuff(text),
+    ...(html ? [
+      `--${boundary}`,
+      'Content-Type: text/plain; charset=utf-8',
+      'Content-Transfer-Encoding: 8bit',
+      '',
+      text,
+      `--${boundary}`,
+      'Content-Type: text/html; charset=utf-8',
+      'Content-Transfer-Encoding: 8bit',
+      '',
+      html,
+      `--${boundary}--`,
+    ] : [text]),
     '.',
   ].join('\r\n');
-  await activeReader.command(active, body, [250]);
+  await activeReader.command(active, dotStuff(body), [250]);
   await activeReader.command(active, 'QUIT', [221]);
 }
 

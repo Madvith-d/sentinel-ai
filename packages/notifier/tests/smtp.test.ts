@@ -59,6 +59,8 @@ describe('smtp notifier', () => {
     await server.close();
     expect(result.ok).toBe(true);
     expect(server.received.some(line => line.includes('Subject: Sentinel')) || server.received.join('\n').includes('inc-mail')).toBe(true);
+    expect(server.received.join('\n')).toContain('multipart/alternative');
+    expect(server.received.join('\n')).toContain('NEXATHON / INCIDENT BRIEF');
     expect(server.received).toContain('AUTH LOGIN');
   });
 

@@ -25,7 +25,7 @@ export async function notifyIncident(incident: Incident, options: NotifyOptions 
   if (smtp) {
     try {
       const subject = `Sentinel · ${incident.status} · ${incident.id}`.slice(0, 180);
-      await sendSmtpMail(smtp, subject, report.text);
+      await sendSmtpMail(smtp, subject, report.text, report.html);
       return { ok: true, report };
     } catch (error) {
       const message = error instanceof Error && error.message === 'SMTP timed out.'

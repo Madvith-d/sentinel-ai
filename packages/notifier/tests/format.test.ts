@@ -25,5 +25,15 @@ describe('notifier safety boundaries', () => {
     expect(report.text).toContain('automatic production-domain assignment can be disabled');
     expect(report.text).toContain('https://github.com/example/repo/pull/1');
     expect(report.text).not.toContain('?ref=demo');
+    expect(report.html).toContain('NEXATHON / INCIDENT BRIEF');
+    expect(report.html).toContain('Important notes');
+    expect(report.html).toContain('href="https://github.com/example/repo/pull/1"');
+    expect(report.html).not.toContain('?ref=demo');
+  });
+
+  test('escapes incident values in the HTML alternative', () => {
+    const report = formatIncidentReport({ ...incident, id: '<script>alert(1)</script>' });
+    expect(report.html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(report.html).not.toContain('<script>alert(1)</script>');
   });
 });
