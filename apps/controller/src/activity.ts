@@ -1,3 +1,5 @@
+import { redactFull } from '@nexathon/notifier/format';
+import { boundActivityText } from '@nexathon/remediator';
 import type { RemediationActivity } from '@nexathon/remediator';
 
 export type ActivitySource = 'ai' | 'rehearsal';
@@ -58,7 +60,7 @@ export interface ActivityPersistence {
 }
 
 /**
- * Live feed of remediation progress. Events are safe summaries produced by the
+ * Live feed of remediation progress. Events contain redacted public messages and tool details produced by the
  * remediator. When a persistence sink is provided, each run and event is written
  * there so a later process can show the log after the sandbox is gone.
  */
@@ -121,7 +123,7 @@ export class ActivityHub {
       at: activity.at,
       phase: activity.phase,
       kind: activity.kind,
-      message: activity.message.slice(0, 1000),
+      message: boundActivityText(redactFull(activity.message)),
     };
     run.events.push(event);
     if (run.events.length > MAX_EVENTS) run.events.shift();

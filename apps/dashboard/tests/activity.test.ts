@@ -25,3 +25,11 @@ test('redacts credentials that reach the feed and rejects unknown run states', (
   expect(() => parseActivityRuns([{ id: 'run-1', incidentId: 'i', source: 'shell', status: 'running', startedAt: '2026-10-23T12:00:00.000Z', eventCount: 0 }]))
     .toThrow();
 });
+
+ test('preserves long transcript details and accepts the new message categories', () => {
+  for (const kind of ['tool_input', 'tool_output', 'summary']) {
+    const event = parseActivityEvent({ seq: 1, at: '2026-10-23T12:00:01Z', phase: 'agent', kind,
+      message: 'x'.repeat(8000) + 'output-end' });
+    expect(event?.message).toEndWith('output-end');
+  }
+});

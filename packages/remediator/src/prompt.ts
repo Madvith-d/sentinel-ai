@@ -49,6 +49,7 @@ export function remediationPrompt(request: RemediationRequest, context?: { basel
       `Create a new incident-specific regression test at ${context.regressionTestPath}. It must reproduce the logged defect against the original source and pass after your fix. The controller will independently run it against both versions.`,
       'Do not change existing tests or the trusted regression fixture. Add assertions for the actual incorrect behavior, not for the presence of your patch.',
     ] : []),
+    'Keep the operator informed with concise progress messages: what you found in the code, the next action, and the result. Finish with a summary of the root cause, changed files, and verification results. Report conclusions and concise rationale; do not reveal private internal reasoning.',
     'Use the read-only GitHub MCP tools to inspect relevant repository/PR history if available.',
     `Edit only files under ${allowedPathPrefix()}. Do not weaken tests to hide failures, disable checks, or modify credentials/configuration.`,
     `Make the smallest effective fix; then run ${request.reproduceCommand}, ${request.testCommand}, and ${request.buildCommand}.`,

@@ -78,7 +78,7 @@ async function runRemediation(incident: Incident, config: RemediationConfig, hub
       };
     }
     const draftPr = await publishDraftPr(request, fix);
-    if (run) hub?.finish(run.id, 'completed', 'Open pull request published.');
+    if (run) hub?.finish(run.id, 'completed', `Fix pull request published: ${draftPr.url}`);
     return {
       ok: true,
       actionUrl: draftPr.url,

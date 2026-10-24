@@ -1,4 +1,4 @@
-import { redact } from '@nexathon/notifier/format';
+import { redact, redactFull } from '@nexathon/notifier/format';
 
 export const activityPhases = [
   'sandbox',
@@ -17,7 +17,7 @@ export interface ActivityEvent {
   seq: number;
   at: string;
   phase: ActivityPhase;
-  kind: 'stage' | 'tool' | 'message' | 'usage' | 'status';
+  kind: 'stage' | 'tool' | 'tool_input' | 'tool_output' | 'summary' | 'message' | 'usage' | 'status';
   message: string;
 }
 
@@ -32,7 +32,7 @@ export interface ActivityRun {
   eventCount: number;
 }
 
-const kinds = ['stage', 'tool', 'message', 'usage', 'status'];
+const kinds = ['stage', 'tool', 'tool_input', 'tool_output', 'summary', 'message', 'usage', 'status'];
 const sources = ['ai', 'rehearsal'];
 const statuses = ['queued', 'running', 'completed', 'failed'];
 
@@ -92,7 +92,8 @@ export function parseActivityEvent(value: unknown): ActivityEvent | null {
       at: date(item.at),
       phase: item.phase as ActivityPhase,
       kind: item.kind as ActivityEvent['kind'],
-      message: text(item.message),
+      message: typeof item.message === 'string' && item.message.trim() && item.message.length <= 32_000
+        ? redactFull(item.message) : text(item.message),
     };
   } catch { return null; }
 }

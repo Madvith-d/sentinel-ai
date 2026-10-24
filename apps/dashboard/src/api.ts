@@ -22,7 +22,7 @@ export async function readJson(path: string, signal: AbortSignal, fetcher = glob
         const { done, value } = await reader.read();
         if (done) break;
         size += value.byteLength;
-        if (size > 1_000_000) throw new ApiError('The incident response is too large. Ask the controller to bound its output.');
+        if (size > (path.startsWith('/api/agent/runs/') ? 20_000_000 : 1_000_000)) throw new ApiError('The incident response is too large. Ask the controller to bound its output.');
         body += decoder.decode(value, { stream: true });
       }
       body += decoder.decode();

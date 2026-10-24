@@ -63,13 +63,13 @@ configuration remain explicit failures; the UI does not claim a fix is running.
 
 ## Watching an agent work
 
-The dashboard's **Live agent activity** panel reads the event stream. Runs are never started from the browser, so the token stays in your shell:
+The dashboard's **Agent transcript** panel reads the event stream and saved runs. It shows public assistant progress messages, redacted tool arguments/results, verification output, the final code diff, and the changed-file summary. Filters, expandable details, a run selector, follow controls, and JSON download make completed work inspectable. Runs are never started from the browser, so the token stays in your shell:
 
 ```sh
 NEXATHON_RUN_TOKEN=<local secret> bun run start:run -- --incident=<incident id> --rehearsal
 ```
 
-`--rehearsal` walks through the same phases with clearly labeled placeholder messages and touches no model, sandbox or repository — use it to demo the UI without credentials. Omit `--rehearsal` to run the real fix path, which requires `CONTROLLER_REMEDIATION_ENABLED=true` and the dedicated model/E2B/GitHub configuration. Every event is a bounded summary produced by the remediator: agent reasoning and raw tool input/output are never emitted. Runs live in memory only and the newest 20 are kept.
+`--rehearsal` walks through the same phases with clearly labeled placeholder messages and touches no model, sandbox or repository — use it to demo the UI without credentials. Omit `--rehearsal` to run the real fix path, which requires `CONTROLLER_REMEDIATION_ENABLED=true` and the dedicated model/E2B/GitHub configuration. Public messages and tool details are redacted before storage. Private internal reasoning is excluded. Individual entries are limited to 32,000 characters with an explicit truncation marker; each run retains its latest 500 entries. The hub keeps the newest 20 runs in memory; PostgreSQL stores runs and retained events for replay after a controller restart.
 
 ## Tests
 

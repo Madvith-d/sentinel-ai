@@ -74,6 +74,20 @@ describe('activity hub', () => {
     expect(restarted.get(run.id)?.events.length).toBeGreaterThan(0);
   });
 
+  it('persists detailed output beyond the old 1000-character cap with secrets redacted', async () => {
+    const store = new IncidentStore(':memory:');
+    const hub = new ActivityHub({
+      saveRun: run => { void store.saveAgentRun(run); },
+      saveEvent: (runId, event) => { void store.saveAgentEvent(runId, event); },
+    });
+    const run = hub.create({ incidentId: incident.id, source: 'ai' });
+    hub.append(run.id, { at: new Date().toISOString(), phase: 'agent', kind: 'tool_output', message: `Test output\npassword=hidden\n${'x'.repeat(8000)}output-end` });
+    const saved = await store.getAgentRun(run.id);
+    expect(saved?.events[0]?.message).toContain('output-end');
+    expect(saved?.events[0]?.message).not.toContain('password=hidden');
+    expect(saved?.events[0]?.kind).toBe('tool_output');
+  });
+
   it('keeps only the newest runs and marks an active run', () => {
     const hub = new ActivityHub();
     for (let index = 0; index < 25; index++) hub.create({ incidentId: incident.id, source: 'rehearsal' });

@@ -10,14 +10,11 @@ import {
   type Incident,
 } from '@nexathon/notifier/format';
 import { useIncidents, type DataMode } from './useIncidents';
+import { AgentTranscript } from './AgentTranscript';
 import { useActivity } from './useActivity';
 
 const mode: DataMode = process.env.NEXT_PUBLIC_DATA_MODE === 'fixtures' ? 'fixtures' : 'live';
 
-const phaseLabels: Record<string, string> = {
-  sandbox: 'Sandbox', checkout: 'Checkout', setup: 'Setup', reproduction: 'Reproduction',
-  agent: 'Agent', verification: 'Verification', patch: 'Patch',
-};
 const runStatusLabels: Record<string, string> = {
   queued: 'Queued', running: 'Running', completed: 'Completed', failed: 'Stopped',
 };
@@ -114,16 +111,13 @@ function Timeline({ events }: { events: Incident['events'] }) {
 }
 
 function LiveActivity({ incidentId }: { incidentId: string }) {
-  const { run, events, error } = useActivity(mode, incidentId);
-  const feed = useRef<HTMLOListElement>(null);
+  const [selectedRunId, setSelectedRunId] = useState('');
+  const { run, runs, events, error } = useActivity(mode, incidentId, selectedRunId);
   const live = run?.status === 'queued' || run?.status === 'running';
-  useEffect(() => {
-    const node = feed.current;
-    if (node) node.scrollTop = node.scrollHeight;
-  }, [events.length, run?.outcome]);
-  return <section className="panel activity-panel" aria-live="polite">
+  useEffect(() => setSelectedRunId(''), [incidentId]);
+  return <section className="panel activity-panel">
     <div className="section-heading">
-      <h2>Live agent activity</h2>
+      <h2>Agent transcript</h2>
       {run
         ? <span className={`run-badge ${live ? 'live' : run.status}`}>
             {live && <span className="pulse" aria-hidden="true" />}
@@ -138,15 +132,13 @@ function LiveActivity({ incidentId }: { incidentId: string }) {
         : 'No saved agent log for this incident yet. The log stays after the sandbox finishes.'}
     </p>}
     {run && <>
-      <p className="activity-now">{events.at(-1)?.message ?? 'Waiting for the first progress event.'}</p>
-      <ol className="activity-feed" ref={feed}>
-        {events.map(event => <li key={event.seq} className={`activity-item phase-${event.phase}`}>
-          <span className="activity-phase">{phaseLabels[event.phase] ?? event.phase}</span>
-          <p>{event.message}</p>
-          <time dateTime={event.at}>{formatTime(event.at)}</time>
-        </li>)}
-      </ol>
-      {events.length === 0 && !error && <p className="activity-empty">Waiting for the first safe progress event…</p>}
+      <div className="transcript-run-picker"><label>Run <select value={selectedRunId} onChange={event => setSelectedRunId(event.target.value)}>
+        <option value="">Latest run</option>
+        {runs.map(candidate => <option key={candidate.id} value={candidate.id}>{formatDate(candidate.startedAt)} · {runStatusLabels[candidate.status]}</option>)}
+      </select></label><span>{run.id}</span></div>
+      <p className="activity-now" role="status">{events.at(-1)?.message.split('\n')[0] ?? 'Waiting for the first progress event.'}</p>
+      <p className="transcript-note">Agent messages and tool details are saved with this run. Credentials are redacted; private internal reasoning is excluded.</p>
+      <AgentTranscript key={run.id} events={events} run={run} />
       {run.outcome && <p className="activity-outcome">{run.outcome}</p>}
     </>}
   </section>;

@@ -1,3 +1,4 @@
+export { boundActivityText, MAX_ACTIVITY_TEXT } from './activity.js';
 export type { RemediationActivity } from './activity.js';
 export { generateFixInE2B } from './e2b-runner.js';
 export { publishDraftPr, validatePatch } from './pr-publisher.js';

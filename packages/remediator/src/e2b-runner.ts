@@ -1,6 +1,6 @@
 import { CommandExitError, Sandbox, type CommandResult } from 'e2b';
 import { verifyIncidentRegression } from './incident-regression.js';
-import { createAgentActivityParser, type RemediationActivity } from './activity.js';
+import { boundActivityText, createAgentActivityParser, type RemediationActivity } from './activity.js';
 import { remediationPrompt, superchargeConfig } from './prompt.js';
 import type { ProviderConfig, RemediationFailure, RemediationRequest, RemediationResult } from './types.js';
 import { allowedPathPrefix, shellQuote, truncate, validateChangedFiles, validateProvider, validateRequest } from './validation.js';
@@ -10,15 +10,16 @@ const SC_VERSION = '1.3.30'; // Latest verified published release at initial imp
 const BUN_VERSION = '1.3.11'; // Team's pinned Bun runtime; update together.
 const MAX_PATCH_BYTES = 256 * 1024;
 
-function redacted(text: string, config: ProviderConfig): string {
+function redacted(text: string, config: ProviderConfig, max = 6000): string {
   let output = text;
   for (const secret of [config.apiKey, config.githubReadToken]) {
     if (secret && secret.length >= 4) output = output.replaceAll(secret, '[REDACTED]');
   }
   return truncate(output
+    .replace(/((?:[\"']?[\w.-]*(?:token|secret|password|passwd|api[_-]?key|authorization|cookie)[\w.-]*[\"']?)\s*[:=]\s*)(?!(?:Bearer|Basic)\s)(?:"[^"\n]*"|'[^'\n]*'|[^\s,;&]+)/gi, '$1[REDACTED]')
     .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9+/_.=-]+/gi, '[REDACTED authorization]')
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|xox[baprs]-[A-Za-z0-9-]+|sk-[A-Za-z0-9_-]{8,})\b/g, '[REDACTED token]')
-    .replace(/https:\/\/hooks\.slack(?:-gov)?\.com\/services\/[^\s<>"']+/gi, '[REDACTED webhook]')); 
+    .replace(/https:\/\/hooks\.slack(?:-gov)?\.com\/services\/[^\s<>"']+/gi, '[REDACTED webhook]'), max);
 }
 
 function failure(request: RemediationRequest, reason: RemediationFailure, message: string, evidence?: string): RemediationResult {
@@ -54,7 +55,7 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
   if (!template) throw new Error('E2B_REMEDIATOR_TEMPLATE is required; the default base sandbox cannot install/build the sample app');
 
   const emit = async (phase: RemediationActivity['phase'], kind: RemediationActivity['kind'], message: string) => {
-    try { await options?.onEvent?.({ at: new Date().toISOString(), phase, kind, message: redacted(message, provider).slice(0, 1000) }); }
+    try { await options?.onEvent?.({ at: new Date().toISOString(), phase, kind, message: boundActivityText(redacted(message, provider, 100_000)) }); }
     catch { /* Dashboard transport failure must not abort remediation. */ }
   };
   let sandbox: Sandbox | undefined;
@@ -74,7 +75,9 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
     await emit('setup', 'stage', 'Preparing pinned Bun and sample dependencies');
     // Bun is used for dependency setup, tests, and build in the target repo.
     await checked(sandbox, `if [ -x "$HOME/.bun/bin/bun" ] && [ "$("$HOME/.bun/bin/bun" --version)" = "${BUN_VERSION}" ]; then "$HOME/.bun/bin/bun" --version; else curl -fsSL https://bun.com/install -o /tmp/bun-install.sh && bash /tmp/bun-install.sh bun-v${BUN_VERSION}; fi`, 90_000);
+    await emit('setup', 'tool_input', `Dependency setup command\n${request.setupCommand}`);
     const setup = await command(sandbox, `export PATH="$HOME/.bun/bin:$PATH"; ${request.setupCommand}`, 180_000, REPO_DIR);
+    await emit('setup', 'tool_output', `Dependency setup · exit ${setup.exitCode}\n${setup.stdout}\n${setup.stderr}`);
     if (setup.exitCode !== 0) return failure(request, 'setup_failed', 'Project dependency setup failed', redacted(setup.stderr || setup.stdout, provider));
 
     let protectedTest: string | undefined;
@@ -91,7 +94,9 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
       }
     }
     await emit('reproduction', 'stage', 'Checking that the incident reproduces before a patch');
+    await emit('reproduction', 'tool_input', `Initial reproduction command\n${request.reproduceCommand}`);
     const baseline = await command(sandbox, `export PATH="$HOME/.bun/bin:$PATH"; ${request.reproduceCommand}`, 120_000, REPO_DIR);
+    await emit('reproduction', 'tool_output', `Initial reproduction · exit ${baseline.exitCode}\n${baseline.stdout}\n${baseline.stderr}`);
     const baselinePassed = baseline.exitCode === 0;
     const regressionTestPath = `${allowedPathPrefix()}tests/incident-${request.incidentId}.test.ts`;
     if (baselinePassed) {
@@ -110,7 +115,7 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
     await sandbox.files.write('/home/user/incident-prompt.txt', remediationPrompt(request, { baselinePassed, regressionTestPath }));
     const envs = { GITHUB_READ_TOKEN: provider.githubReadToken };
     const parser = createAgentActivityParser((kind, message) => { void emit('agent', kind, message); },
-      (text) => redacted(text, provider));
+      (text) => redacted(text, provider, 1_000_000));
     let diagnosticsNoted = false;
     await emit('agent', 'stage', 'Supercharge is diagnosing and editing in E2B');
     const agent = await command(sandbox,
@@ -157,11 +162,15 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
     }
 
     await emit('verification', 'stage', 'Re-running the reproduction, project tests, and build');
+    await emit('verification', 'tool_input', `Verification commands\n${request.reproduceCommand}\n${request.testCommand}\n${request.buildCommand}`);
     const repro = await command(sandbox, `export PATH="$HOME/.bun/bin:$PATH"; ${request.reproduceCommand}`, 120_000, REPO_DIR);
+    await emit('reproduction', 'tool_output', `Repro · exit ${repro.exitCode}\n${repro.stdout}\n${repro.stderr}`);
     if (repro.exitCode !== 0) return failure(request, 'test_failed', 'Reproduction still fails after the patch', redacted(repro.stderr || repro.stdout, provider));
     const tests = await command(sandbox, `export PATH="$HOME/.bun/bin:$PATH"; ${request.testCommand}`, 120_000, REPO_DIR);
+    await emit('verification', 'tool_output', `Tests · exit ${tests.exitCode}\n${tests.stdout}\n${tests.stderr}`);
     if (tests.exitCode !== 0) return failure(request, 'test_failed', 'Project tests failed after the patch', redacted(tests.stderr || tests.stdout, provider));
     const build = await command(sandbox, `export PATH="$HOME/.bun/bin:$PATH"; ${request.buildCommand}`, 120_000, REPO_DIR);
+    await emit('verification', 'tool_output', `Build · exit ${build.exitCode}\n${build.stdout}\n${build.stderr}`);
     if (build.exitCode !== 0) return failure(request, 'build_failed', 'Project build failed after the patch', redacted(build.stderr || build.stdout, provider));
 
     // Stage only the demo target. Never return provider config, tokens, or edits elsewhere.
@@ -176,7 +185,8 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
     if (/^(?:new file mode|deleted file mode) 120000$/m.test(diff.stdout) || diff.stdout.includes('GIT binary patch')) {
       return failure(request, 'unsafe_patch', 'Symlinks and binary patches require human review');
     }
-    await emit('patch', 'status', `Verified patch for ${changedFiles.length} sample files; controller may open a draft PR`);
+    await emit('patch', 'tool_output', `Verified code diff\n${diff.stdout}`);
+    await emit('patch', 'summary', `Verified fix ready\nChanged files:\n${changedFiles.map(path => `- ${path}`).join('\n')}\n\nThe incident reproduction, project tests, and build passed. The controller will publish the pull request.`);
     return {
       ok: true,
       incidentId: request.incidentId,
@@ -184,7 +194,7 @@ export async function generateFixInE2B(request: RemediationRequest, provider: Pr
       patch: diff.stdout,
       changedFiles,
       baseline: redacted(incidentBaseline ? incidentBaseline.stderr || incidentBaseline.stdout : baseline.stderr || baseline.stdout, provider),
-      agentSummary: `Supercharge completed ${parser.toolCalls} tool calls; raw agent stream intentionally omitted`,
+      agentSummary: `Supercharge completed ${parser.toolCalls} tool calls. Redacted messages, tool inputs/results, verification, and patch are saved in the activity transcript.`,
       testOutput: redacted(`${repro.stdout}\n${tests.stdout}\n${tests.stderr}`, provider),
       buildOutput: redacted(`${build.stdout}\n${build.stderr}`, provider),
       mcpConfigured: Boolean(provider.githubReadToken),

@@ -95,3 +95,14 @@ if (fix.ok) {
 - Ronit must add the sample app, a reproducible failing-test fixture, and the controller's shared incident contract. Then connect the controller's `fix_pr` decision to `generateFixInE2B` and persist its result.
 - Anish needs a **dedicated** model API credential and a read-only GitHub MCP token before the first full fix run. E2B sandbox creation, preinstalled Bun/Supercharge versions, sample install/build, and the deterministic fixture have been smoke-tested with the available E2B key; **the model-driven fix and PR creation are not yet end-to-end verified**.
 - The published Supercharge release is currently 1.3.30 despite a newer locally built binary/docs. If the release changes, verify the exact installer asset and CLI flags before upgrading the pinned version.
+
+## Agent transcript
+
+Streaming JSON is parsed into public assistant messages, tool calls, redacted
+inputs and results, usage, and status events. Private thought/reasoning events
+and corresponding nested fields are omitted. The agent is prompted to explain
+its findings, next actions, and final root cause and verification summary.
+Setup, reproduction, tests, build output, changed files, and the verified diff
+are included in the saved transcript. Entries over 32,000 characters carry an
+explicit truncation notice; malformed and oversized protocol lines are skipped
+without corrupting subsequent events.
