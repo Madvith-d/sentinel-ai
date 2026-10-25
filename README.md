@@ -1,4 +1,8 @@
-# Sentinel
+# Sentinel AI
+
+https://github.com/user-attachments/assets/3f8fb72b-176f-460a-bfea-b62a0465d290
+
+
 
 Sentinel is a incident-response control plane for a separately deployed
 web application. It checks application health and deployment status, records
